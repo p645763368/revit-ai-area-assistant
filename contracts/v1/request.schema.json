@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://revit-ai-area-assistant.local/contracts/v1/request.schema.json",
+  "title": "Agent request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "message_type", "request_id", "action", "payload"],
+  "properties": {
+    "contract_version": {"const": "1.0"},
+    "message_type": {"const": "request"},
+    "request_id": {"type": "string", "minLength": 1},
+    "action": {"type": "string", "minLength": 1},
+    "payload": {"type": "object"}
+  }
+}

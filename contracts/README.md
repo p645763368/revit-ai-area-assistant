@@ -1,0 +1,13 @@
+# Shared communication contracts
+
+`v1/` is the public boundary shared by the pyRevit client, local Agent and later rvt-mcp integration. It defines four message envelopes: request, response, state and error. Every message carries `contract_version: "1.0"` and a stable `message_type`.
+
+Compatibility rules:
+
+- Consumers must reject unsupported major versions rather than guessing.
+- Backward-compatible optional fields may be added within v1.
+- Required-field removal, field meaning changes, or enum narrowing require a new major directory such as `v2/`.
+- Contract changes must update the schema, example and contract test in the same pull request.
+- Feature-specific payload fields belong in later tickets; this baseline intentionally defines only the shared envelope.
+
+The JSON Schema files are the source of truth. `examples/` contains reviewable sample messages, not real project data.

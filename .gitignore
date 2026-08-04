@@ -1,0 +1,33 @@
+# Revit models and local project state
+*.rvt
+*.rfa
+*.rte
+AI_Area_Assistant_Data/
+
+# Credentials and machine-local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Runtime output and project captures
+*.log
+logs/
+screenshots/
+/screenshot*.png
+
+# Python and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# IDE and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
