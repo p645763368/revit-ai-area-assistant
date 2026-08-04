@@ -17,6 +17,7 @@
 - `pyrevit/AI Area Assistant.extension/`：pyRevit端最小只读入口。Dockable Pane属于后续Issue。
 - `area_assistant_agent/`：独立CPython Agent最小入口。
 - `contracts/v1/`：pyRevit、Agent与后续rvt-mcp集成共享的版本化JSON契约。
+- `knowledge/`：经批准、匿名化且可跨项目复用的规则与案例边界。
 - `tests/`：不依赖Revit的用户可见入口、契约和安全边界测试。
 - `.github/workflows/ci.yml`：在Windows上执行编译检查与自动测试。
 
@@ -25,6 +26,7 @@
 需要Python 3.9或更高版本。在仓库根目录执行：
 
 ```powershell
+python -m pip install -e ".[test]"
 python -m area_assistant_agent --check
 python -m unittest discover -s tests -v
 ```

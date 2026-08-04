@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 import unittest
 
+from jsonschema import Draft202012Validator
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACTS = ROOT / "contracts" / "v1"
@@ -15,10 +17,8 @@ class SharedContractExamplesTests(unittest.TestCase):
                 example = json.loads((CONTRACTS / "examples" / f"{message_type}.json").read_text(encoding="utf-8"))
 
                 self.assertEqual(schema["$schema"], "https://json-schema.org/draft/2020-12/schema")
-                self.assertEqual(schema["properties"]["contract_version"]["const"], "1.0")
-                self.assertEqual(example["contract_version"], "1.0")
-                self.assertEqual(example["message_type"], message_type)
-                self.assertTrue(set(schema["required"]).issubset(example))
+                Draft202012Validator.check_schema(schema)
+                Draft202012Validator(schema).validate(example)
 
 
 if __name__ == "__main__":

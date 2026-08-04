@@ -1,6 +1,10 @@
+import runpy
 import subprocess
+import sys
+import types
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -9,10 +13,18 @@ ROOT = Path(__file__).resolve().parents[1]
 class RepositoryBaselineTests(unittest.TestCase):
     def test_pyrevit_command_is_present_and_valid_python(self):
         script = ROOT / "pyrevit" / "AI Area Assistant.extension" / "AI Area Assistant.tab" / "Assistant.panel" / "Open.pushbutton" / "script.py"
-        source = script.read_text(encoding="utf-8")
+        alerts = []
+        fake_forms = types.SimpleNamespace(alert=lambda message, **options: alerts.append((message, options)))
+        fake_pyrevit = types.ModuleType("pyrevit")
+        fake_pyrevit.forms = fake_forms
 
-        compile(source, str(script), "exec")
-        self.assertIn("AI Area Assistant", source)
+        with patch.dict(sys.modules, {"pyrevit": fake_pyrevit}):
+            runpy.run_path(str(script))
+
+        self.assertEqual(len(alerts), 1)
+        message, options = alerts[0]
+        self.assertIn("baseline is ready", message)
+        self.assertEqual(options["title"], "AI Area Assistant")
 
     def test_sensitive_runtime_artifacts_are_ignored(self):
         sensitive_paths = [
@@ -31,6 +43,15 @@ class RepositoryBaselineTests(unittest.TestCase):
             check=True,
         )
         self.assertEqual(completed.stdout.splitlines(), sensitive_paths)
+
+    def test_tracked_files_pass_forbidden_artifact_and_secret_scan(self):
+        completed = subprocess.run(
+            [sys.executable, "scripts/check_repository_safety.py"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
 
 if __name__ == "__main__":
