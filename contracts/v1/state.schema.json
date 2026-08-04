@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://revit-ai-area-assistant.local/contracts/v1/state.schema.json",
+  "title": "Agent state update",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "message_type", "session_id", "sequence", "state"],
+  "properties": {
+    "contract_version": {"const": "1.0"},
+    "message_type": {"const": "state"},
+    "session_id": {"type": "string", "minLength": 1},
+    "sequence": {"type": "integer", "minimum": 0},
+    "state": {"type": "string", "minLength": 1},
+    "details": {"type": "object"}
+  }
+}

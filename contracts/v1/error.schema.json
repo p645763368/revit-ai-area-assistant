@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://revit-ai-area-assistant.local/contracts/v1/error.schema.json",
+  "title": "Agent error",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "message_type", "request_id", "code", "message", "retryable"],
+  "properties": {
+    "contract_version": {"const": "1.0"},
+    "message_type": {"const": "error"},
+    "request_id": {"type": ["string", "null"]},
+    "code": {"type": "string", "minLength": 1},
+    "message": {"type": "string", "minLength": 1},
+    "retryable": {"type": "boolean"},
+    "details": {"type": "object"}
+  }
+}

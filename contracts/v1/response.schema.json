@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://revit-ai-area-assistant.local/contracts/v1/response.schema.json",
+  "title": "Agent response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "message_type", "request_id", "status", "payload"],
+  "properties": {
+    "contract_version": {"const": "1.0"},
+    "message_type": {"const": "response"},
+    "request_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["accepted", "completed", "cancelled"]},
+    "payload": {"type": "object"}
+  }
+}

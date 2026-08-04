@@ -1,0 +1,11 @@
+[project]
+name = "revit-ai-area-assistant"
+version = "0.1.0"
+description = "Local Agent and pyRevit baseline for the Revit AI Area Assistant demo"
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+test = ["jsonschema>=4.21,<5"]
+
+[tool.setuptools.packages.find]
+include = ["area_assistant_agent*"]
