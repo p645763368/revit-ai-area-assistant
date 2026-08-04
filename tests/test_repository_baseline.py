@@ -6,6 +6,8 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+from scripts.check_repository_safety import violations
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,6 +54,12 @@ class RepositoryBaselineTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_safety_scan_rejects_forced_root_screenshot(self):
+        self.assertEqual(
+            violations([Path("screenshot-demo.png")]),
+            ["forbidden artifact: screenshot-demo.png"],
+        )
 
 
 if __name__ == "__main__":

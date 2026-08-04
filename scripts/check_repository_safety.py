@@ -30,7 +30,13 @@ def tracked_paths():
 def violations(paths):
     findings = []
     for relative in paths:
-        if relative.suffix.lower() in FORBIDDEN_SUFFIXES or FORBIDDEN_PARTS.intersection(relative.parts):
+        lowered_parts = {part.lower() for part in relative.parts}
+        is_root_screenshot = len(relative.parts) == 1 and relative.name.lower().startswith("screenshot")
+        if (
+            relative.suffix.lower() in FORBIDDEN_SUFFIXES
+            or {part.lower() for part in FORBIDDEN_PARTS}.intersection(lowered_parts)
+            or is_root_screenshot
+        ):
             findings.append(f"forbidden artifact: {relative.as_posix()}")
             continue
         absolute = ROOT / relative
