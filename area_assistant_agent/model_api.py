@@ -51,6 +51,7 @@ class OpenAICompatibleClient:
             method="POST",
         )
         try:
+            terminated = False
             with urlopen(request, timeout=self._config.timeout_seconds) as response:
                 for raw_line in response:
                     line = raw_line.decode("utf-8").strip()
@@ -71,6 +72,8 @@ class OpenAICompatibleClient:
                     if not isinstance(choices, list) or not isinstance(choices[0], dict):
                         raise _protocol_error()
                     choice = choices[0]
+                    if choice.get("finish_reason") is not None:
+                        terminated = True
                     delta = choice.get("delta")
                     if delta is None and choice.get("finish_reason") is not None:
                         continue
@@ -83,6 +86,8 @@ class OpenAICompatibleClient:
                         raise _protocol_error()
                     if content:
                         yield content
+            if not terminated:
+                raise _protocol_error()
         except HTTPError as exc:
             raise ModelApiError(
                 "model_http_error",

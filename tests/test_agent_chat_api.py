@@ -28,9 +28,16 @@ class _StreamingModelHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
-        for payload in (
+        payloads = (
             {"choices": [{"delta": {"content": "你好"}}]},
             {"choices": [{"delta": {"content": "，建筑师"}}]},
+        )
+        if "/disconnect/" in self.path:
+            for payload in payloads:
+                self.wfile.write(("data: " + json.dumps(payload) + "\n\n").encode("utf-8"))
+                self.wfile.flush()
+            return
+        for payload in payloads + (
             {"choices": [{"finish_reason": "stop"}]},
             {
                 "choices": [],
@@ -160,6 +167,24 @@ class AgentChatApiTests(unittest.TestCase):
 
         self.assertEqual(events[-1]["message_type"], "error")
         self.assertEqual(events[-1]["code"], "model_http_error")
+        self.assertTrue(events[-1]["retryable"])
+        evidence = json.dumps(events, ensure_ascii=False) + stderr.getvalue()
+        self.assertNotIn("unit-test", evidence)
+        self.assertNotIn("Authorization", evidence)
+
+    def test_model_disconnect_after_partial_reply_returns_retryable_error(self):
+        self._restart_agent("disconnect", timeout_seconds=1)
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            events = self._send_chat("req-disconnect")
+
+        self.assertEqual(
+            [event.get("payload", {}).get("delta") for event in events[1:3]],
+            ["你好", "，建筑师"],
+        )
+        self.assertFalse(any(event.get("status") == "completed" for event in events))
+        self.assertEqual(events[-1]["message_type"], "error")
+        self.assertEqual(events[-1]["code"], "model_protocol_error")
         self.assertTrue(events[-1]["retryable"])
         evidence = json.dumps(events, ensure_ascii=False) + stderr.getvalue()
         self.assertNotIn("unit-test", evidence)
