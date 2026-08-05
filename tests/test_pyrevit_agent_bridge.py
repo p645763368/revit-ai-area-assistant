@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import sys
+import tempfile
 import time
 import unittest
 
@@ -215,6 +216,63 @@ class PyRevitAgentBridgeTests(unittest.TestCase):
             requests[2]["payload"]["previous_pause_reason"],
             "document_changed",
         )
+
+    def test_new_pyrevit_engine_reads_completed_background_result(self):
+        calls = []
+
+        def runner(command, input_text, cwd):
+            request = json.loads(input_text)
+            calls.append(request)
+            return (
+                0,
+                json.dumps(
+                    {
+                        "contract_version": "1.0",
+                        "message_type": "response",
+                        "request_id": request["request_id"],
+                        "status": "completed",
+                        "payload": {
+                            "binding_status": "bound",
+                            "write_allowed": True,
+                            "pause_reason": None,
+                        },
+                    }
+                ),
+                "",
+            )
+
+        current = {
+            "revit_instance_id": "revit-4312",
+            "document_title": "Development Copy",
+            "document_path": r"D:\RevitTests\development-copy.rvt",
+            "document_fingerprint": "sha256:first",
+            "active_view": {"id": "42", "name": "GFA Review"},
+            "is_modified": False,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            first_engine = AgentBridge(
+                "python",
+                str(ROOT),
+                runner=runner,
+                background=True,
+                result_root=temporary,
+            )
+            self.assertIsNone(first_engine.query(current))
+            deadline = time.monotonic() + 1
+            while first_engine._worker.is_alive() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            second_engine = AgentBridge(
+                "python",
+                str(ROOT),
+                runner=lambda *args: self.fail("completed result should be reused"),
+                background=True,
+                result_root=temporary,
+            )
+
+            response = second_engine.query(current)
+
+        self.assertEqual(response["payload"]["binding_status"], "bound")
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":

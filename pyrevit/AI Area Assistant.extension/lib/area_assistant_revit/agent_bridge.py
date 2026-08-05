@@ -1,8 +1,11 @@
 """Call the independent CPython Agent without embedding it in pyRevit."""
 
 import json
+import os
 import subprocess
+import tempfile
 import threading
+import time
 import uuid
 
 
@@ -91,7 +94,14 @@ def _public_document(document):
 
 
 class AgentBridge(object):
-    def __init__(self, python_executable, repository_root, runner=None, background=False):
+    def __init__(
+        self,
+        python_executable,
+        repository_root,
+        runner=None,
+        background=False,
+        result_root=None,
+    ):
         self._python_executable = python_executable
         self._repository_root = repository_root
         self._runner = runner or _run_process
@@ -103,6 +113,11 @@ class AgentBridge(object):
         self._error = None
         self._request_key = None
         self._lock = threading.Lock()
+        self._result_root = result_root or os.path.join(
+            os.environ.get("LOCALAPPDATA", tempfile.gettempdir()),
+            "RevitAIAreaAssistant",
+            "runtime",
+        )
 
     def query(self, current_document, observed_pause_reason=None):
         if observed_pause_reason:
@@ -120,6 +135,17 @@ class AgentBridge(object):
         with self._lock:
             if self._worker is not None and self._worker.is_alive():
                 return None
+            cached = self._read_cached_result(current_document)
+            if cached is not None and cached.get("request_key") == list(request_key):
+                state = cached.get("state")
+                if state == "completed":
+                    response = cached["response"]
+                    self._remember_response(current_document, response)
+                    return response
+                if state == "error":
+                    raise RuntimeError(cached.get("error", "local Agent document status failed"))
+                if state == "running" and time.time() - cached.get("updated_at", 0) < 20:
+                    return None
             if self._request_key == request_key:
                 if self._error is not None:
                     raise self._error
@@ -128,6 +154,14 @@ class AgentBridge(object):
             self._request_key = request_key
             self._result = None
             self._error = None
+            self._write_cached_result(
+                current_document,
+                {
+                    "request_key": list(request_key),
+                    "state": "running",
+                    "updated_at": time.time(),
+                },
+            )
             self._worker = threading.Thread(
                 target=self._execute_in_background,
                 args=(current_document,),
@@ -141,9 +175,27 @@ class AgentBridge(object):
             result = self._execute(current_document)
             with self._lock:
                 self._result = result
+                self._write_cached_result(
+                    current_document,
+                    {
+                        "request_key": list(self._request_key),
+                        "state": "completed",
+                        "updated_at": time.time(),
+                        "response": result,
+                    },
+                )
         except Exception as error:
             with self._lock:
                 self._error = error
+                self._write_cached_result(
+                    current_document,
+                    {
+                        "request_key": list(self._request_key),
+                        "state": "error",
+                        "updated_at": time.time(),
+                        "error": str(error),
+                    },
+                )
 
     def _execute(self, current_document):
         request_id = "req-{0}".format(uuid.uuid4().hex)
@@ -180,12 +232,43 @@ class AgentBridge(object):
             raise RuntimeError(response.get("message", "local Agent document status failed"))
         if response.get("message_type") != "response" or response.get("status") != "completed":
             raise RuntimeError("invalid local Agent document status response")
+        self._remember_response(current_document, response)
+        return response
+
+    def _remember_response(self, current_document, response):
         binding = response.get("payload", {})
         if binding.get("binding_status") == "bound":
             self._previous_document = _public_document(current_document)
         if binding.get("binding_status") == "paused":
             self._pause_reason = binding.get("pause_reason") or "document_changed"
-        return response
+
+    def _result_path(self, current_document):
+        instance_id = current_document.get("revit_instance_id", "invalid")
+        safe_instance_id = "".join(
+            character for character in instance_id if character.isalnum() or character in "-_"
+        )
+        return os.path.join(self._result_root, "pyrevit-{0}.json".format(safe_instance_id))
+
+    def _read_cached_result(self, current_document):
+        path = self._result_path(current_document)
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "r") as stream:
+                return json.load(stream)
+        except (IOError, ValueError):
+            return None
+
+    def _write_cached_result(self, current_document, value):
+        if not os.path.isdir(self._result_root):
+            os.makedirs(self._result_root)
+        path = self._result_path(current_document)
+        temporary = path + ".tmp"
+        with open(temporary, "w") as stream:
+            json.dump(value, stream, ensure_ascii=True, sort_keys=True)
+        if os.path.isfile(path):
+            os.remove(path)
+        os.rename(temporary, path)
 
 
 def get_agent_bridge(python_executable, repository_root):
