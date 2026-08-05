@@ -24,8 +24,11 @@ class AgentClient:
 
     def is_ready(self):
         try:
-            with urlopen(self.base_url + "/health", timeout=self.timeout_seconds) as response:
+            response = urlopen(self.base_url + "/health", timeout=self.timeout_seconds)
+            try:
                 payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                response.close()
             return (
                 payload.get("contract_version") == CONTRACT_VERSION
                 and payload.get("message_type") == "response"
@@ -50,10 +53,13 @@ class AgentClient:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
+            response = urlopen(request, timeout=self.timeout_seconds)
+            try:
                 for raw_line in response:
                     if raw_line.strip():
                         yield json.loads(raw_line.decode("utf-8"))
+            finally:
+                response.close()
         except (HTTPError, OSError, ValueError, URLError) as exc:
             raise AgentConnectionError("Local Agent connection failed: {}".format(exc))
 
