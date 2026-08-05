@@ -85,8 +85,9 @@ if agent_python:
                 status["document_fingerprint"],
             )
             _ensure_document_switch_guard()
-    except Exception:
+    except Exception as error:
         binding_status = "unavailable"
+        pause_reason = "agent_error: {0}".format(error)
 
 if local_pause_reason:
     binding_status = "paused"

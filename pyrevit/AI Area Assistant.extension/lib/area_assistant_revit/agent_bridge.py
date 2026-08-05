@@ -9,6 +9,33 @@ _BRIDGES = {}
 
 
 def _run_process(command, input_text, cwd):
+    try:
+        from System.Diagnostics import Process, ProcessStartInfo
+
+        start_info = ProcessStartInfo()
+        start_info.FileName = command[0]
+        start_info.Arguments = " ".join(command[1:])
+        start_info.WorkingDirectory = cwd
+        start_info.UseShellExecute = False
+        start_info.CreateNoWindow = True
+        start_info.RedirectStandardInput = True
+        start_info.RedirectStandardOutput = True
+        start_info.RedirectStandardError = True
+
+        process = Process()
+        process.StartInfo = start_info
+        process.Start()
+        process.StandardInput.Write(input_text)
+        process.StandardInput.Close()
+        stdout = process.StandardOutput.ReadToEnd()
+        stderr = process.StandardError.ReadToEnd()
+        if not process.WaitForExit(15000):
+            process.Kill()
+            raise RuntimeError("local Agent document status timed out")
+        return process.ExitCode, stdout, stderr
+    except ImportError:
+        pass
+
     process = subprocess.Popen(
         command,
         cwd=cwd,
