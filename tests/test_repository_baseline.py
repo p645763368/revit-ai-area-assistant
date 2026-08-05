@@ -6,6 +6,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+from area_assistant_pyrevit import PANEL_ID
 from scripts.check_repository_safety import violations
 
 
@@ -15,18 +16,22 @@ ROOT = Path(__file__).resolve().parents[1]
 class RepositoryBaselineTests(unittest.TestCase):
     def test_pyrevit_command_is_present_and_valid_python(self):
         script = ROOT / "pyrevit" / "AI Area Assistant.extension" / "AI Area Assistant.tab" / "Assistant.panel" / "Open.pushbutton" / "script.py"
-        alerts = []
-        fake_forms = types.SimpleNamespace(alert=lambda message, **options: alerts.append((message, options)))
+        opened_panels = []
+        fake_forms = types.SimpleNamespace(open_dockable_panel=opened_panels.append)
         fake_pyrevit = types.ModuleType("pyrevit")
         fake_pyrevit.forms = fake_forms
 
         with patch.dict(sys.modules, {"pyrevit": fake_pyrevit}):
             runpy.run_path(str(script))
 
-        self.assertEqual(len(alerts), 1)
-        message, options = alerts[0]
-        self.assertIn("baseline is ready", message)
-        self.assertEqual(options["title"], "AI Area Assistant")
+        self.assertEqual(opened_panels, [PANEL_ID])
+
+    def test_pyrevit_dockable_panel_uses_the_supported_ironpython_forms_backend(self):
+        startup = ROOT / "pyrevit" / "AI Area Assistant.extension" / "startup.py"
+        command = ROOT / "pyrevit" / "AI Area Assistant.extension" / "AI Area Assistant.tab" / "Assistant.panel" / "Open.pushbutton" / "script.py"
+
+        self.assertFalse(startup.read_text(encoding="utf-8").startswith("#! python3"))
+        self.assertFalse(command.read_text(encoding="utf-8").startswith("#! python3"))
 
     def test_sensitive_runtime_artifacts_are_ignored(self):
         sensitive_paths = [

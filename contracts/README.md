@@ -11,3 +11,7 @@ Compatibility rules:
 - Feature-specific payload fields belong in later tickets; this baseline intentionally defines only the shared envelope.
 
 The JSON Schema files are the source of truth. `examples/` contains reviewable sample messages, not real project data.
+
+Feature contracts:
+
+- [`v1/chat.md`](v1/chat.md) defines the backward-compatible `chat.stream` action and its streamed response payloads.

@@ -1,0 +1,42 @@
+<Page
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Background="#FFF7F7F7">
+  <Grid Margin="12">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+    <Border Grid.Row="0" Padding="10" Margin="0,0,0,10" Background="White" CornerRadius="4">
+      <StackPanel>
+        <TextBlock Text="连接状态" FontWeight="SemiBold" />
+        <TextBlock x:Name="ConnectionState" Text="连接中" Foreground="#FF1F6FEB" FontSize="16" />
+        <TextBlock x:Name="ConnectionDetail" Text="正在连接本地 Agent…" TextWrapping="Wrap" Foreground="#FF555555" />
+      </StackPanel>
+    </Border>
+    <TextBox
+        x:Name="Transcript"
+        Grid.Row="1"
+        IsReadOnly="True"
+        AcceptsReturn="True"
+        TextWrapping="Wrap"
+        VerticalScrollBarVisibility="Auto"
+        Padding="10"
+        Background="White" />
+    <TextBox
+        x:Name="MessageInput"
+        Grid.Row="2"
+        MinHeight="64"
+        Margin="0,10,0,8"
+        AcceptsReturn="True"
+        TextWrapping="Wrap"
+        VerticalScrollBarVisibility="Auto"
+        ToolTip="输入给 AI 的消息" />
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+      <Button x:Name="RetryButton" Content="重试" IsEnabled="False" MinWidth="72" Margin="0,0,8,0" />
+      <Button x:Name="SendButton" Content="发送" IsDefault="True" IsEnabled="False" MinWidth="88" />
+    </StackPanel>
+  </Grid>
+</Page>
