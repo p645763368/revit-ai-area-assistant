@@ -49,7 +49,7 @@ Agent就绪检查应输出`status: ready`和`contract_version: 1.0`。当前入�
 Issue #4新增两层只读安全检查：
 
 - pyRevit入口读取当前进程、文档完整路径、活动视图、修改状态和文档指纹。
-- 本地Agent将pyRevit读取的文档和活动视图快照与rvt-mcp独立发现的唯一Revit进程交叉验证，并把任务绑定到一个实例和一个文档。任何实例或文档证据冲突都会暂停任务并撤销写入许可。
+- 本地Agent将pyRevit快照与rvt-mcp独立读取的Revit进程、文档标题、完整路径、项目身份、活动视图和修改状态交叉验证，并把任务绑定到一个实例和一个文档。任何证据冲突都会暂停任务并撤销写入许可。
 
 指定开发测试副本的完整路径只通过用户级环境变量提供，不写入仓库：
 
@@ -61,7 +61,7 @@ Issue #4新增两层只读安全检查：
 )
 ```
 
-设置后需完全退出并重新启动Revit。路径匹配只是候选授权；只有Agent确认pyRevit进程与rvt-mcp发现的唯一实例相同后，`write_allowed`才会为`true`。未保存文档、其他模型、原模型、切换后的文档以及rvt-mcp实例证据不一致时始终拒绝写入。
+设置后需完全退出并重新启动Revit。路径匹配只是候选授权；只有Agent确认pyRevit与rvt-mcp读取的实例、文档、活动视图和修改状态全部一致后，`write_allowed`才会为`true`。未保存文档、其他模型、原模型、切换后的文档以及任何rvt-mcp证据不一致时始终拒绝写入。
 
 文档切换触发的暂停锁在当前Revit进程内不会自动恢复，切回授权副本或执行pyRevit `Reload`也仍保持拒绝写入。Issue #4尚未提供“开始新任务”交互；人工测试若需重新绑定，必须完全退出并重新启动Revit。后续面板Ticket可以在明确的用户操作下提供新任务/重新绑定入口。
 
@@ -80,7 +80,7 @@ pyRevit通过独立CPython运行Agent，需要配置解释器路径。扩展仍�
 )
 ```
 
-Agent会优先使用`AI_AREA_ASSISTANT_RVT_MCP_COMMAND`指定的rvt-mcp服务命令；未设置时，从`%LOCALAPPDATA%\RvtMcp\rvt\server\`自动选择已安装服务。同步pyRevit命令只调用不占用Revit UI线程的目标发现工具，并用唯一目标PID核对当前pyRevit进程；文档、活动视图和修改状态由当前pyRevit执行上下文读取。
+Agent会优先使用`AI_AREA_ASSISTANT_RVT_MCP_COMMAND`指定的rvt-mcp服务命令；未设置时，从`%LOCALAPPDATA%\RvtMcp\rvt\server\`自动选择已安装服务。按钮在后台运行Agent和rvt-mcp验证，避免占用Revit UI线程：第一次点击启动验证并显示`pending`，关闭提示、等待数秒后再次点击查看结果。rvt-mcp请求10秒超时，Agent子进程15秒超时；无响应时终止检查并保持拒绝写入。
 
 Revit 2026人工验收步骤见[`docs/issue-4-revit-manual-test.md`](docs/issue-4-revit-manual-test.md)。
 

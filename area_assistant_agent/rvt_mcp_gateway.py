@@ -3,11 +3,23 @@
 import json
 import os
 from pathlib import Path
+import queue
 import shlex
 import subprocess
+import threading
 from typing import Any, IO, Optional
 
 from .document_binding import RvtMcpSnapshot
+
+
+DOCUMENT_EVIDENCE_CODE = """return new {
+    documentTitle = doc.Title,
+    documentPath = doc.PathName,
+    projectInformationId = doc.ProjectInformation.UniqueId,
+    isModified = doc.IsModified,
+    activeViewId = uidoc.ActiveView.Id.Value.ToString(),
+    activeViewName = uidoc.ActiveView.Name
+};"""
 
 
 def discover_rvt_mcp_command() -> list[str]:
@@ -26,10 +38,13 @@ def discover_rvt_mcp_command() -> list[str]:
 
 
 class McpStdioClient:
-    def __init__(self, command: Optional[list[str]] = None):
+    def __init__(self, command: Optional[list[str]] = None, timeout_seconds: float = 10.0):
         self._command = command or discover_rvt_mcp_command()
         self._process: Optional[subprocess.Popen[str]] = None
         self._next_id = 1
+        self._timeout_seconds = timeout_seconds
+        self._messages: queue.Queue[Optional[str]] = queue.Queue()
+        self._reader: Optional[threading.Thread] = None
 
     def __enter__(self) -> "McpStdioClient":
         self._process = subprocess.Popen(
@@ -41,6 +56,8 @@ class McpStdioClient:
             encoding="utf-8",
             bufsize=1,
         )
+        self._reader = threading.Thread(target=self._read_stdout_lines, daemon=True)
+        self._reader.start()
         self._request(
             "initialize",
             {
@@ -106,11 +123,21 @@ class McpStdioClient:
         stdin.flush()
 
     def _read(self) -> dict:
-        _, stdout = self._streams()
-        line = stdout.readline()
-        if not line:
+        try:
+            line = self._messages.get(timeout=self._timeout_seconds)
+        except queue.Empty as error:
+            raise RuntimeError("rvt-mcp response timed out") from error
+        if line is None:
             raise RuntimeError("rvt-mcp server closed the connection")
         return json.loads(line)
+
+    def _read_stdout_lines(self) -> None:
+        if self._process is None or self._process.stdout is None:
+            self._messages.put(None)
+            return
+        for line in self._process.stdout:
+            self._messages.put(line)
+        self._messages.put(None)
 
     def _streams(self) -> tuple[IO[str], IO[str]]:
         if self._process is None or self._process.stdin is None or self._process.stdout is None:
@@ -124,8 +151,17 @@ def read_current_revit_evidence(client: Any) -> RvtMcpSnapshot:
     if discovery.get("count") != 1 or len(targets) != 1:
         raise RuntimeError("document binding requires exactly one Revit target")
 
-    # A pyRevit command owns Revit's UI thread while this check runs. Calling a
-    # Revit-backed MCP tool here would wait for that same thread and deadlock.
-    # Discovery is independent of Revit's UI thread and exposes the live PID,
-    # which is the evidence needed to corroborate pyRevit's instance identity.
-    return RvtMcpSnapshot.from_discovery_target(targets[0])
+    target = targets[0]
+    switched = client.call_tool(
+        "revit_switch_target",
+        {"version": str(target["year"]), "verify": True},
+    )
+    if not switched.get("ok") or not switched.get("verified"):
+        raise RuntimeError("rvt-mcp target verification failed")
+    result = client.call_tool(
+        "revit_send_code_to_revit",
+        {"code": DOCUMENT_EVIDENCE_CODE},
+    )
+    if not result.get("executed") or not isinstance(result.get("result"), dict):
+        raise RuntimeError("rvt-mcp document evidence failed")
+    return RvtMcpSnapshot.from_tool_results(target, result["result"])

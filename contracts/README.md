@@ -12,4 +12,4 @@ Compatibility rules:
 
 The JSON Schema files are the source of truth. `examples/` contains reviewable sample messages, not real project data.
 
-Issue-specific payload contracts are additive files under `v1/actions/`. `revit-document-status.schema.json` defines the document identity and binding result shared by the pyRevit panel and local Agent; it does not change any existing v1 envelope field.
+Issue-specific payload contracts are additive files under `v1/actions/`. `revit-document-status-request.schema.json` and `revit-document-status.schema.json` define the document-status request and binding result shared by the pyRevit client, local Agent and later Dockable Pane; they reuse the existing v1 request/response envelope fields without changing their meaning.

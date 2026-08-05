@@ -1,6 +1,7 @@
 """Read-only document identity and single-target binding rules."""
 
 from dataclasses import dataclass
+import hashlib
 import ntpath
 from typing import Optional
 
@@ -9,6 +10,15 @@ def canonical_document_path(path: str) -> str:
     if not path or not ntpath.isabs(path):
         return ""
     return ntpath.normcase(ntpath.normpath(path))
+
+
+def document_fingerprint(path: str, title: str, project_information_id: str) -> str:
+    identity = "{0}|{1}|{2}".format(
+        canonical_document_path(path),
+        title or "",
+        project_information_id or "",
+    )
+    return "sha256:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -25,14 +35,38 @@ class DocumentSnapshot:
 @dataclass(frozen=True)
 class RvtMcpSnapshot:
     instance_pid: int
+    document_title: str
+    document_path: str
+    document_fingerprint: str
+    active_view_id: str
+    active_view_name: str
+    is_modified: bool
 
     @classmethod
-    def from_discovery_target(cls, target: dict) -> "RvtMcpSnapshot":
+    def from_tool_results(cls, target: dict, document: dict) -> "RvtMcpSnapshot":
         try:
             instance_pid = int(target["pid"])
+            title = str(document["documentTitle"])
+            path = str(document["documentPath"])
+            project_information_id = str(document["projectInformationId"])
+            active_view_id = str(document["activeViewId"])
+            active_view_name = str(document["activeViewName"])
+            is_modified = bool(document["isModified"])
         except (KeyError, TypeError, ValueError) as error:
-            raise ValueError("rvt-mcp discovery target is incomplete") from error
-        return cls(instance_pid=instance_pid)
+            raise ValueError("rvt-mcp document evidence is incomplete") from error
+        return cls(
+            instance_pid=instance_pid,
+            document_title=title,
+            document_path=path,
+            document_fingerprint=document_fingerprint(
+                path,
+                title,
+                project_information_id,
+            ),
+            active_view_id=active_view_id,
+            active_view_name=active_view_name,
+            is_modified=is_modified,
+        )
 
 
 class DocumentBindingSession:
@@ -42,7 +76,7 @@ class DocumentBindingSession:
         self._rvt_mcp_status = "unchecked"
         self._paused_reason: Optional[str] = None
 
-    def restore(self, snapshot: DocumentSnapshot) -> None:
+    def restore(self, snapshot: DocumentSnapshot, pause_reason: Optional[str] = None) -> None:
         """Restore the last Agent-approved identity for a new one-shot process."""
         self._bound_identity = (
             snapshot.instance_id,
@@ -50,7 +84,7 @@ class DocumentBindingSession:
             canonical_document_path(snapshot.document_path),
         )
         self._rvt_mcp_status = "verified"
-        self._paused_reason = None
+        self._paused_reason = pause_reason
 
     def bind(self, snapshot: DocumentSnapshot, rvt_mcp_snapshot: RvtMcpSnapshot) -> dict:
         self._paused_reason = None
@@ -110,6 +144,20 @@ class DocumentBindingSession:
     ) -> Optional[str]:
         if snapshot.instance_id != f"revit-{rvt_mcp_snapshot.instance_pid}":
             return "rvt_mcp_instance_mismatch"
+        if (
+            canonical_document_path(snapshot.document_path)
+            != canonical_document_path(rvt_mcp_snapshot.document_path)
+            or snapshot.document_title != rvt_mcp_snapshot.document_title
+            or snapshot.document_fingerprint != rvt_mcp_snapshot.document_fingerprint
+        ):
+            return "rvt_mcp_document_mismatch"
+        if (
+            snapshot.active_view_id != rvt_mcp_snapshot.active_view_id
+            or snapshot.active_view_name != rvt_mcp_snapshot.active_view_name
+        ):
+            return "rvt_mcp_view_mismatch"
+        if snapshot.is_modified != rvt_mcp_snapshot.is_modified:
+            return "rvt_mcp_modified_mismatch"
         return None
 
     def _status(self, snapshot: DocumentSnapshot, binding_status: str, pause_reason: Optional[str]) -> dict:

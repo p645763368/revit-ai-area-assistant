@@ -4,6 +4,7 @@ import os
 import sys
 
 from . import CONTRACT_VERSION, SERVICE_NAME
+from .binding_state_store import BindingStateStore
 from .document_status_runtime import resolve_document_status
 from .rvt_mcp_gateway import McpStdioClient
 
@@ -33,15 +34,25 @@ def main() -> int:
     request = json.load(sys.stdin)
     request_id = str(request.get("request_id", "document-status"))
     try:
+        if (
+            request.get("contract_version") != CONTRACT_VERSION
+            or request.get("message_type") != "request"
+            or request.get("action") != "revit.document_status"
+            or not isinstance(request.get("payload"), dict)
+        ):
+            raise ValueError("unsupported or invalid document status request envelope")
+        payload = request["payload"]
         with McpStdioClient() as client:
             response = resolve_document_status(
                 request_id=request_id,
-                current_payload=request["current_document"],
-                previous_payload=request.get("previous_document"),
+                current_payload=payload["current_document"],
+                previous_payload=payload.get("previous_document"),
+                previous_pause_reason=payload.get("previous_pause_reason"),
                 authorized_document_path=os.environ.get(
                     "AI_AREA_ASSISTANT_TEST_DOCUMENT", ""
                 ),
                 client=client,
+                binding_store=BindingStateStore(),
             )
         print(json.dumps(response, ensure_ascii=False, sort_keys=True))
         return 0

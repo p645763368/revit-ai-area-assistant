@@ -15,9 +15,33 @@ from area_assistant_agent.document_status_action import document_status_response
 ROOT = Path(__file__).resolve().parents[1]
 ACTION_CONTRACT = ROOT / "contracts" / "v1" / "actions" / "revit-document-status.schema.json"
 ACTION_EXAMPLE = ROOT / "contracts" / "v1" / "actions" / "examples" / "revit-document-status.json"
+REQUEST_CONTRACT = ROOT / "contracts" / "v1" / "actions" / "revit-document-status-request.schema.json"
+REQUEST_EXAMPLE = ROOT / "contracts" / "v1" / "actions" / "examples" / "revit-document-status-request.json"
+
+
+def rvt_snapshot(view_id="12345", view_name="GFA Review"):
+    return RvtMcpSnapshot(
+        instance_pid=4312,
+        document_title="Development Copy",
+        document_path=r"D:\RevitTests\development-copy.rvt",
+        document_fingerprint="sha256:anonymous-document",
+        active_view_id=view_id,
+        active_view_name=view_name,
+        is_modified=False,
+    )
 
 
 class DocumentStatusContractTests(unittest.TestCase):
+    def test_document_status_request_example_uses_shared_v1_envelope(self):
+        schema = json.loads(REQUEST_CONTRACT.read_text(encoding="utf-8"))
+        example = json.loads(REQUEST_EXAMPLE.read_text(encoding="utf-8"))
+
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema).validate(example)
+        self.assertEqual(example["contract_version"], "1.0")
+        self.assertEqual(example["message_type"], "request")
+        self.assertEqual(example["action"], "revit.document_status")
+
     def test_document_status_example_is_valid_and_versioned(self):
         schema = json.loads(ACTION_CONTRACT.read_text(encoding="utf-8"))
         example = json.loads(ACTION_EXAMPLE.read_text(encoding="utf-8"))
@@ -45,7 +69,7 @@ class DocumentStatusContractTests(unittest.TestCase):
             request_id="req-42",
             session=session,
             document_snapshot=snapshot,
-            rvt_mcp_snapshot=RvtMcpSnapshot(instance_pid=4312),
+            rvt_mcp_snapshot=rvt_snapshot(),
         )
 
         Draft202012Validator(schema).validate(response)
@@ -56,7 +80,7 @@ class DocumentStatusContractTests(unittest.TestCase):
             instance_id="revit-4312",
             document_title="Development Copy",
             document_path=r"D:\RevitTests\development-copy.rvt",
-            document_fingerprint="sha256:initial-document",
+            document_fingerprint="sha256:anonymous-document",
             active_view_id="12345",
             active_view_name="GFA Review",
             is_modified=False,
@@ -65,7 +89,7 @@ class DocumentStatusContractTests(unittest.TestCase):
             "req-1",
             session,
             initial,
-            RvtMcpSnapshot(instance_pid=4312),
+            rvt_snapshot(),
         )
         switched = DocumentSnapshot(
             instance_id="revit-4312",
@@ -81,7 +105,7 @@ class DocumentStatusContractTests(unittest.TestCase):
             "req-2",
             session,
             switched,
-            RvtMcpSnapshot(instance_pid=4312),
+            rvt_snapshot(view_id="88", view_name="Floor Plan"),
         )
 
         self.assertEqual(response["payload"]["binding_status"], "paused")

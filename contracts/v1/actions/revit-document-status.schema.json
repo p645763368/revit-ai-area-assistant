@@ -50,8 +50,11 @@
             "not_bound",
             "revit_instance_changed",
             "document_changed",
+            "document_observation_failed",
             "rvt_mcp_instance_mismatch",
-            "rvt_mcp_view_mismatch"
+            "rvt_mcp_document_mismatch",
+            "rvt_mcp_view_mismatch",
+            "rvt_mcp_modified_mismatch"
           ]
         }
       }

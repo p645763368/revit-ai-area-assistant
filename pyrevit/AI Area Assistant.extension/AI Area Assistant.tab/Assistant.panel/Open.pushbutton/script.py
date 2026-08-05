@@ -73,18 +73,24 @@ repository_root = os.environ.get(
 )
 if agent_python:
     try:
-        agent_response = get_agent_bridge(agent_python, repository_root).query(status)
-        binding = agent_response["payload"]
-        binding_status = binding["binding_status"]
-        rvt_mcp_status = binding["rvt_mcp_status"]
-        write_permission = "allowed" if binding["write_allowed"] else "denied"
-        pause_reason = binding["pause_reason"]
-        if binding_status == "bound" and pyrevit_script is not None:
-            pyrevit_script.set_envvar(
-                BOUND_FINGERPRINT_KEY,
-                status["document_fingerprint"],
-            )
-            _ensure_document_switch_guard()
+        agent_response = get_agent_bridge(agent_python, repository_root).query(
+            status,
+            local_pause_reason,
+        )
+        if agent_response is not None:
+            binding = agent_response["payload"]
+            binding_status = binding["binding_status"]
+            rvt_mcp_status = binding["rvt_mcp_status"]
+            write_permission = "allowed" if binding["write_allowed"] else "denied"
+            pause_reason = binding["pause_reason"]
+            if binding_status == "bound" and pyrevit_script is not None:
+                pyrevit_script.set_envvar(
+                    BOUND_FINGERPRINT_KEY,
+                    status["document_fingerprint"],
+                )
+                _ensure_document_switch_guard()
+        else:
+            pause_reason = "verification_running_close_wait_and_click_again"
     except Exception as error:
         binding_status = "unavailable"
         pause_reason = "agent_error: {0}".format(error)

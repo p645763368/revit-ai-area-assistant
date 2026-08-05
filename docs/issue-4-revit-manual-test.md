@@ -130,8 +130,8 @@ rvt-mcp v0.5的Revit插件一次只能让一个服务连接。Codex正在连接R
 在开发测试副本处于当前活动文档时：
 
 1. 点击Revit功能区的`AI Area Assistant`选项卡。
-2. 点击其中的`AI Area Assistant`按钮。
-3. 等待状态弹窗出现。
+2. 点击其中的`AI Area Assistant`按钮。第一次点击只启动后台验证，应显示`pending`；关闭弹窗并等待约3秒。
+3. 再次点击`AI Area Assistant`按钮查看验证结果。如果仍是`pending`，关闭弹窗、再等待3秒并重试；等待期间Revit界面应可正常操作。
 
 逐行核对弹窗：
 
@@ -144,7 +144,7 @@ rvt-mcp v0.5的Revit插件一次只能让一个服务连接。Codex正在连接R
 | `IsModified` | `True`或`False`均可 | 记录下来，后面要再次比较 |
 | `Authorized path match` | `yes` | 当前文件与环境变量中的测试副本完全一致 |
 | `Agent/rvt-mcp binding` | `bound` | Agent已经绑定当前实例和文档 |
-| `rvt-mcp status` | `verified` | rvt-mcp发现的唯一Revit进程与pyRevit当前进程一致 |
+| `rvt-mcp status` | `verified` | rvt-mcp独立读取的实例、文档、活动视图和修改状态与pyRevit一致 |
 | `Write permission` | `allowed` | 安全条件全部通过；本Issue仍不会真的写入 |
 | `Pause reason` | `none` | 当前没有触发暂停 |
 
@@ -154,7 +154,8 @@ rvt-mcp v0.5的Revit插件一次只能让一个服务连接。Codex正在连接R
 
 | 看到的结果 | 先做什么 |
 |---|---|
-| `pending` | Revit没有读取到Agent Python配置；完全退出Revit后重新执行第3步 |
+| 首次点击显示`pending` | 正常；关闭弹窗、等待约3秒后再次点击 |
+| 多次点击仍显示`pending` | 等待至少15秒；若仍无结果，记录弹窗并停止测试 |
 | `unavailable` | 关闭其他Codex/MCP客户端，再执行第6步的OFF→ON |
 | `Authorized path match: no` | 第3步选择的RVT和当前打开的RVT不是同一个完整路径 |
 | `rvt-mcp status: mismatch` | 确认只有一个Revit实例，并重新执行MCP OFF→ON |

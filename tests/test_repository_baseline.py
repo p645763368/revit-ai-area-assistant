@@ -66,7 +66,7 @@ class RepositoryBaselineTests(unittest.TestCase):
             )
         )
         fake_bridge = types.SimpleNamespace(
-            query=lambda status: {
+            query=lambda status, pause_reason=None: {
                 "payload": {
                     "binding_status": "bound",
                     "rvt_mcp_status": "verified",
@@ -140,7 +140,7 @@ class RepositoryBaselineTests(unittest.TestCase):
         fake_pyrevit.framework = types.SimpleNamespace(EventHandler=EventHandlerFactory())
         fake_bridge_module = types.ModuleType("area_assistant_revit.agent_bridge")
         fake_bridge_module.get_agent_bridge = lambda python, root: types.SimpleNamespace(
-            query=lambda status: {
+            query=lambda status, pause_reason=None: {
                 "payload": {
                     "binding_status": "bound",
                     "rvt_mcp_status": "verified",

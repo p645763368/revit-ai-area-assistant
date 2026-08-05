@@ -1,6 +1,6 @@
 import unittest
 
-from area_assistant_agent.rvt_mcp_gateway import read_current_revit_evidence
+from area_assistant_agent.rvt_mcp_gateway import McpStdioClient, read_current_revit_evidence
 
 
 class FakeMcpClient:
@@ -14,6 +14,20 @@ class FakeMcpClient:
                 "count": 1,
                 "targets": [{"year": "2026", "pid": 4312}],
             }
+        if name == "revit_switch_target":
+            return {"ok": True, "verified": True}
+        if name == "revit_send_code_to_revit":
+            return {
+                "executed": True,
+                "result": {
+                    "documentTitle": "Development Copy",
+                    "documentPath": r"D:\RevitTests\development-copy.rvt",
+                    "projectInformationId": "project-id",
+                    "activeViewId": "2178223",
+                    "activeViewName": "GFA Review",
+                    "isModified": False,
+                },
+            }
         raise AssertionError("unexpected tool: " + name)
 
 
@@ -24,7 +38,16 @@ class RvtMcpGatewayTests(unittest.TestCase):
         evidence = read_current_revit_evidence(client)
 
         self.assertEqual(evidence.instance_pid, 4312)
-        self.assertEqual(client.calls, [("revit_list_available_targets", {})])
+        self.assertEqual(evidence.document_title, "Development Copy")
+        self.assertEqual(evidence.active_view_id, "2178223")
+        self.assertEqual(
+            [name for name, _ in client.calls],
+            [
+                "revit_list_available_targets",
+                "revit_switch_target",
+                "revit_send_code_to_revit",
+            ],
+        )
 
     def test_agent_refuses_ambiguous_multiple_revit_targets(self):
         class MultipleTargetsClient(FakeMcpClient):
@@ -41,6 +64,12 @@ class RvtMcpGatewayTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "exactly one Revit target"):
             read_current_revit_evidence(MultipleTargetsClient())
+
+    def test_mcp_client_times_out_when_server_stalls(self):
+        client = McpStdioClient(["unused"], timeout_seconds=0.01)
+
+        with self.assertRaisesRegex(RuntimeError, "response timed out"):
+            client._read()
 
 
 if __name__ == "__main__":
