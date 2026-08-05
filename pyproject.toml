@@ -8,4 +8,7 @@ requires-python = ">=3.9"
 test = ["jsonschema>=4.21,<5"]
 
 [tool.setuptools.packages.find]
-include = ["area_assistant_agent*"]
+include = ["area_assistant_agent*", "area_assistant_pyrevit*"]
+
+[tool.setuptools.package-data]
+area_assistant_pyrevit = ["*.xaml"]

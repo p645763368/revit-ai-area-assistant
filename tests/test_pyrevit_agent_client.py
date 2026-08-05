@@ -1,0 +1,108 @@
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import unittest
+
+from area_assistant_pyrevit.client import AgentClient, ensure_agent_available
+
+
+class _FakeAgentHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps(
+            {
+                "contract_version": "1.0",
+                "message_type": "response",
+                "request_id": "health",
+                "status": "completed",
+                "payload": {
+                    "service": "revit-ai-area-assistant-agent",
+                    "status": "ready",
+                },
+            }
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        length = int(self.headers["Content-Length"])
+        request = json.loads(self.rfile.read(length))
+        self.server.request_payload = request
+        events = [
+            {
+                "contract_version": "1.0",
+                "message_type": "response",
+                "request_id": request["request_id"],
+                "status": "accepted",
+                "payload": {"delta": "第一段"},
+            },
+            {
+                "contract_version": "1.0",
+                "message_type": "response",
+                "request_id": request["request_id"],
+                "status": "completed",
+                "payload": {"message": "第一段"},
+            },
+        ]
+        body = "".join(json.dumps(event) + "\n" for event in events).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+
+class PyRevitAgentClientTests(unittest.TestCase):
+    def setUp(self):
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeAgentHandler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.client = AgentClient(
+            "http://127.0.0.1:{}".format(self.server.server_port), timeout_seconds=1
+        )
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def test_panel_client_observes_health_and_streamed_reply(self):
+        self.assertTrue(self.client.is_ready())
+
+        events = list(self.client.stream_chat("计算这一层", request_id="req-panel-1"))
+
+        self.assertEqual(events[0]["payload"]["delta"], "第一段")
+        self.assertEqual(events[-1]["status"], "completed")
+        self.assertEqual(self.server.request_payload["action"], "chat.stream")
+        self.assertEqual(self.server.request_payload["payload"]["message"], "计算这一层")
+
+    def test_panel_starts_agent_once_then_waits_until_it_is_ready(self):
+        class InitiallyStoppedClient:
+            def __init__(self):
+                self.checks = 0
+
+            def is_ready(self):
+                self.checks += 1
+                return self.checks >= 3
+
+        stopped_client = InitiallyStoppedClient()
+        starts = []
+
+        available = ensure_agent_available(
+            stopped_client,
+            lambda: starts.append("started"),
+            attempts=3,
+            delay_seconds=0,
+        )
+
+        self.assertTrue(available)
+        self.assertEqual(starts, ["started"])
+        self.assertEqual(stopped_client.checks, 3)
+
+
+if __name__ == "__main__":
+    unittest.main()
