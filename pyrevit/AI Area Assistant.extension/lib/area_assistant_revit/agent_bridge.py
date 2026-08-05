@@ -10,7 +10,7 @@ import uuid
 
 
 CONTRACT_VERSION = "1.0"
-PROCESS_TIMEOUT_SECONDS = 15
+PROCESS_TIMEOUT_SECONDS = 45
 _BRIDGES = {}
 
 
@@ -142,9 +142,9 @@ class AgentBridge(object):
                     response = cached["response"]
                     self._remember_response(current_document, response)
                     return response
-                if state == "error":
+                if state == "error" and time.time() - cached.get("updated_at", 0) < 5:
                     raise RuntimeError(cached.get("error", "local Agent document status failed"))
-                if state == "running" and time.time() - cached.get("updated_at", 0) < 20:
+                if state == "running" and time.time() - cached.get("updated_at", 0) < 60:
                     return None
             if self._request_key == request_key:
                 if self._error is not None:

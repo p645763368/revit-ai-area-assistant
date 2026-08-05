@@ -130,8 +130,9 @@ rvt-mcp v0.5的Revit插件一次只能让一个服务连接。Codex正在连接R
 在开发测试副本处于当前活动文档时：
 
 1. 点击Revit功能区的`AI Area Assistant`选项卡。
-2. 点击其中的`AI Area Assistant`按钮。第一次点击只启动后台验证，应显示`pending`；关闭弹窗并等待约3秒。
-3. 再次点击`AI Area Assistant`按钮查看验证结果。如果仍是`pending`，关闭弹窗、再等待3秒并重试；等待期间Revit界面应可正常操作。
+2. 点击其中的`AI Area Assistant`按钮。第一次点击只启动后台验证，应出现短暂的非模态通知，不应弹出阻塞窗口。
+3. 等待30至45秒；等待期间Revit界面应可正常操作，但不要切换文档、视图或修改模型。
+4. 再次点击`AI Area Assistant`按钮查看最终验证结果。
 
 逐行核对弹窗：
 
@@ -154,8 +155,8 @@ rvt-mcp v0.5的Revit插件一次只能让一个服务连接。Codex正在连接R
 
 | 看到的结果 | 先做什么 |
 |---|---|
-| 首次点击显示`pending` | 正常；关闭弹窗、等待约3秒后再次点击 |
-| 多次点击仍显示`pending` | 等待至少15秒；若仍无结果，记录弹窗并停止测试 |
+| 首次点击只出现后台验证通知 | 正常；等待30至45秒后再次点击 |
+| 45秒后仍显示`pending` | 再等待15秒；若仍无结果，记录状态并停止测试 |
 | `unavailable` | 关闭其他Codex/MCP客户端，再执行第6步的OFF→ON |
 | `Authorized path match: no` | 第3步选择的RVT和当前打开的RVT不是同一个完整路径 |
 | `rvt-mcp status: mismatch` | 确认只有一个Revit实例，并重新执行MCP OFF→ON |

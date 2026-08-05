@@ -38,7 +38,7 @@ def discover_rvt_mcp_command() -> list[str]:
 
 
 class McpStdioClient:
-    def __init__(self, command: Optional[list[str]] = None, timeout_seconds: float = 10.0):
+    def __init__(self, command: Optional[list[str]] = None, timeout_seconds: float = 30.0):
         self._command = command or discover_rvt_mcp_command()
         self._process: Optional[subprocess.Popen[str]] = None
         self._next_id = 1

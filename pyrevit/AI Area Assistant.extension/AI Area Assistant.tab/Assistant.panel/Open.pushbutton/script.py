@@ -63,6 +63,7 @@ binding_status = "pending"
 rvt_mcp_status = "unchecked"
 write_permission = "denied"
 pause_reason = None
+show_modal = True
 local_pause_reason = (
     pyrevit_script.get_envvar(PAUSE_REASON_KEY) if pyrevit_script is not None else None
 )
@@ -91,6 +92,13 @@ if agent_python:
                 _ensure_document_switch_guard()
         else:
             pause_reason = "verification_running_close_wait_and_click_again"
+            show_modal = False
+            if hasattr(forms, "toast"):
+                forms.toast(
+                    "Document verification is running in the background. "
+                    "Wait up to 45 seconds, then click AI Area Assistant again.",
+                    title="AI Area Assistant",
+                )
     except Exception as error:
         binding_status = "unavailable"
         pause_reason = "agent_error: {0}".format(error)
@@ -116,8 +124,9 @@ message = "\n".join(
 )
 
 
-forms.alert(
-    message,
-    title="AI Area Assistant",
-    warn_icon=False,
-)
+if show_modal:
+    forms.alert(
+        message,
+        title="AI Area Assistant",
+        warn_icon=False,
+    )

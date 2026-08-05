@@ -80,7 +80,7 @@ pyRevit通过独立CPython运行Agent，需要配置解释器路径。扩展仍�
 )
 ```
 
-Agent会优先使用`AI_AREA_ASSISTANT_RVT_MCP_COMMAND`指定的rvt-mcp服务命令；未设置时，从`%LOCALAPPDATA%\RvtMcp\rvt\server\`自动选择已安装服务。按钮在后台运行Agent和rvt-mcp验证，避免占用Revit UI线程：第一次点击启动验证并显示`pending`，关闭提示、等待数秒后再次点击查看结果。rvt-mcp请求10秒超时，Agent子进程15秒超时；无响应时终止检查并保持拒绝写入。
+Agent会优先使用`AI_AREA_ASSISTANT_RVT_MCP_COMMAND`指定的rvt-mcp服务命令；未设置时，从`%LOCALAPPDATA%\RvtMcp\rvt\server\`自动选择已安装服务。按钮在后台运行Agent和rvt-mcp验证，避免占用Revit UI线程：第一次点击只发送非模态通知并立即返回，等待最长45秒后再次点击查看结果。rvt-mcp单次响应30秒超时，Agent子进程45秒超时；无响应时终止检查并保持拒绝写入。
 
 Revit 2026人工验收步骤见[`docs/issue-4-revit-manual-test.md`](docs/issue-4-revit-manual-test.md)。
 

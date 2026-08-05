@@ -98,6 +98,48 @@ class RepositoryBaselineTests(unittest.TestCase):
         self.assertIn("rvt-mcp status: verified", message)
         self.assertIn("Write permission: allowed", message)
 
+    def test_pyrevit_background_verification_does_not_show_modal_pending_alert(self):
+        script = ROOT / "pyrevit" / "AI Area Assistant.extension" / "AI Area Assistant.tab" / "Assistant.panel" / "Open.pushbutton" / "script.py"
+        alerts = []
+        toasts = []
+        fake_pyrevit = types.ModuleType("pyrevit")
+        fake_pyrevit.forms = types.SimpleNamespace(
+            alert=lambda message, **options: alerts.append((message, options)),
+            toast=lambda message, **options: toasts.append((message, options)),
+        )
+        fake_pyrevit.revit = types.SimpleNamespace(
+            doc=types.SimpleNamespace(
+                Title="Development Copy",
+                PathName=r"D:\RevitTests\area-assistant-development-copy.rvt",
+                IsModified=False,
+                ActiveView=types.SimpleNamespace(Id=42, Name="GFA Review"),
+                ProjectInformation=types.SimpleNamespace(UniqueId="project-information-id"),
+            )
+        )
+        fake_bridge_module = types.ModuleType("area_assistant_revit.agent_bridge")
+        fake_bridge_module.get_agent_bridge = lambda python, root: types.SimpleNamespace(
+            query=lambda status, pause_reason=None: None
+        )
+
+        with patch.dict(
+            sys.modules,
+            {
+                "pyrevit": fake_pyrevit,
+                "area_assistant_revit.agent_bridge": fake_bridge_module,
+            },
+        ), patch.dict(
+            "os.environ",
+            {
+                "AI_AREA_ASSISTANT_AGENT_PYTHON": sys.executable,
+                "AI_AREA_ASSISTANT_TEST_DOCUMENT": r"D:\RevitTests\area-assistant-development-copy.rvt",
+            },
+        ):
+            runpy.run_path(str(script))
+
+        self.assertEqual(alerts, [])
+        self.assertEqual(len(toasts), 1)
+        self.assertIn("running in the background", toasts[0][0])
+
     def test_pyrevit_guard_marks_task_paused_when_active_document_changes(self):
         script_path = ROOT / "pyrevit" / "AI Area Assistant.extension" / "AI Area Assistant.tab" / "Assistant.panel" / "Open.pushbutton" / "script.py"
         envvars = {}
