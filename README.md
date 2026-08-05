@@ -52,3 +52,25 @@ Agent就绪检查应输出`status: ready`和`contract_version: 1.0`。当前入�
 
 本仓库只保存代码、匿名示例和文档。`.gitignore`阻止常见RVT、凭据、日志、截图和`AI_Area_Assistant_Data`进入Git，但提交前仍必须人工检查暂存文件。真实API密钥只能通过用户级环境变量或安全凭据提供。
 
+Issue #5提供了外部会话持久化接口。数据根目录固定为项目目录下的`AI_Area_Assistant_Data`，并在运行时解析为绝对路径。可在仓库根目录查看当前项目解析后的路径：
+
+```powershell
+python -m area_assistant_agent --show-data-root .
+```
+
+输出示例为`{"data_root": "D:\\path\\to\\project\\AI_Area_Assistant_Data"}`。运行数据按文档指纹的SHA-256目录键隔离，结构如下：
+
+```text
+AI_Area_Assistant_Data/
+└── documents/<document-key>/sessions/<session-id>/
+    ├── state.json
+    ├── conversation.jsonl
+    ├── operations.jsonl
+    ├── agent.log.jsonl
+    └── session.md
+```
+
+`SessionRepository.recovery_prompt()`只列出当前文档可恢复的会话。面板集成方必须先向用户显示“继续上次会话”或“新建会话”的选择；不得在打开面板时调用`resume_session()`。用户明确选择继续后，恢复状态为`awaiting_user_action`，不会重放旧的模型操作。对话内容以及工具输入、输出和错误写入记录前会递归遮蔽Authorization、API密钥、Token、Secret和Password字段。
+
+本Issue只提供本地Agent侧的公开持久化边界；Dockable Pane对这些接口的调用由对应面板Issue集成。本功能不读取、修改或保存RVT，也没有修改`contracts/v1`共享通信契约。
+
