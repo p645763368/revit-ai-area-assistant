@@ -64,7 +64,8 @@ class SessionPersistenceTests(unittest.TestCase):
                 role="user",
                 content=(
                     "Continue the saved area review. "
-                    "Authorization: Bearer conversation-secret"
+                    "Authorization: Bearer chat-secret "
+                    "password=conversation-password"
                 ),
             )
 
@@ -76,13 +77,18 @@ class SessionPersistenceTests(unittest.TestCase):
             ]
             self.assertEqual(records[0]["role"], "user")
             self.assertIn("Continue the saved area review.", records[0]["content"])
-            self.assertNotIn("conversation-secret", records[0]["content"])
+            self.assertNotIn("chat-secret", records[0]["content"])
+            self.assertNotIn("conversation-password", records[0]["content"])
             self.assertIn(
                 "Continue the saved area review.",
                 session.markdown_path.read_text(encoding="utf-8"),
             )
             self.assertNotIn(
-                "conversation-secret",
+                "chat-secret",
+                session.markdown_path.read_text(encoding="utf-8"),
+            )
+            self.assertNotIn(
+                "conversation-password",
                 session.markdown_path.read_text(encoding="utf-8"),
             )
 
@@ -98,12 +104,15 @@ class SessionPersistenceTests(unittest.TestCase):
                 inputs={
                     "Authorization": "Bearer top-secret",
                     "nested": {
-                        "api_key": "sk-live-secret",
+                        "api_key": "fake-key",
                         "level_id": 42,
                         "session_token": "token-value",
                     },
                 },
-                error="request failed: Authorization: Bearer error-secret",
+                error=(
+                    "request failed: Authorization: Bearer err-secret; "
+                    "api_key=error-api-secret password=hunter2 token=plain-token"
+                ),
             )
 
             for filename in ("operations.jsonl", "agent.log.jsonl"):
@@ -118,12 +127,35 @@ class SessionPersistenceTests(unittest.TestCase):
                 )
                 self.assertEqual(event["inputs"]["nested"]["level_id"], 42)
                 self.assertNotIn("top-secret", text)
-                self.assertNotIn("live-secret", text)
-                self.assertNotIn("error-secret", text)
+                self.assertNotIn("fake-key", text)
+                self.assertNotIn("err-secret", text)
+                self.assertNotIn("error-api-secret", text)
+                self.assertNotIn("hunter2", text)
+                self.assertNotIn("plain-token", text)
             markdown = session.markdown_path.read_text(encoding="utf-8")
             self.assertNotIn("top-secret", markdown)
-            self.assertNotIn("live-secret", markdown)
-            self.assertNotIn("error-secret", markdown)
+            self.assertNotIn("fake-key", markdown)
+            self.assertNotIn("err-secret", markdown)
+            self.assertNotIn("error-api-secret", markdown)
+            self.assertNotIn("hunter2", markdown)
+            self.assertNotIn("plain-token", markdown)
+
+    def test_successful_tool_io_is_human_readable_in_markdown(self):
+        with tempfile.TemporaryDirectory() as project_directory:
+            repository = SessionRepository(Path(project_directory))
+            session = repository.create_session("document-fingerprint-a")
+
+            repository.record_tool_event(
+                "document-fingerprint-a",
+                session.session_id,
+                tool_name="inspect_document",
+                inputs={"level_id": 42},
+                output={"area_count": 3},
+            )
+
+            markdown = session.markdown_path.read_text(encoding="utf-8")
+            self.assertIn('"level_id": 42', markdown)
+            self.assertIn('"area_count": 3', markdown)
 
     def test_machine_state_can_be_loaded_by_a_new_repository_instance(self):
         with tempfile.TemporaryDirectory() as project_directory:

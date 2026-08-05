@@ -25,12 +25,13 @@ def _is_sensitive_key(key: str) -> bool:
 
 
 def _redact_text(value: str) -> str:
-    value = re.sub(r"(?i)\bBearer\s+[^\s,;]+", REDACTED, value)
     value = re.sub(
-        r"(?i)(Authorization\s*[:=]\s*)([^\s,;]+)",
-        lambda match: match.group(1) + REDACTED,
+        r"(?i)\b(authorization|api[-_ ]?key|token|secret|password)"
+        r"\s*[:=]\s*(?:(?:Bearer|Basic)\s+)?[^\s,;]+",
+        lambda match: match.group(1) + "=" + REDACTED,
         value,
     )
+    value = re.sub(r"(?i)\bBearer\s+[^\s,;]+", REDACTED, value)
     value = re.sub(r"\bsk-[A-Za-z0-9_-]{6,}\b", REDACTED, value)
     return value
 
@@ -69,6 +70,10 @@ def _append_jsonl(path: Path, value: Dict[str, Any]) -> None:
         stream.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def _pretty_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+
+
 @dataclass(frozen=True)
 class SessionHandle:
     session_id: str
@@ -100,18 +105,9 @@ class SessionRepository:
         if not document_fingerprint.strip():
             raise ValueError("document_fingerprint must not be empty")
 
-        document_key = self._document_key(document_fingerprint)
         session_id = str(uuid.uuid4())
-        session_directory = (
-            self.data_root / "documents" / document_key / "sessions" / session_id
-        )
-        session_directory.mkdir(parents=True, exist_ok=False)
-        handle = SessionHandle(
-            session_id=session_id,
-            directory=session_directory,
-            state_path=session_directory / "state.json",
-            markdown_path=session_directory / "session.md",
-        )
+        handle = self._session_handle(document_fingerprint, session_id)
+        handle.directory.mkdir(parents=True, exist_ok=False)
         created_at = _utc_now()
         _write_json_atomic(
             handle.state_path,
@@ -229,7 +225,18 @@ class SessionRepository:
             markdown.write(
                 f"\n## Tool `{event['tool_name']}` `{recorded_at}`\n\n"
                 f"- Result: `{event_type}`\n"
+                "- Input:\n\n"
+                "```json\n"
+                f"{_pretty_json(event['inputs'])}\n"
+                "```\n"
             )
+            if event["output"] is not None:
+                markdown.write(
+                    "- Output:\n\n"
+                    "```json\n"
+                    f"{_pretty_json(event['output'])}\n"
+                    "```\n"
+                )
             if event["error"] is not None:
                 markdown.write(f"- Error: `{event['error']}`\n")
         state["updated_at"] = recorded_at
@@ -264,6 +271,17 @@ class SessionRepository:
             raise ValueError("invalid session_id") from error
         if parsed_session_id != session_id:
             raise ValueError("invalid session_id")
+        handle = self._session_handle(document_fingerprint, session_id)
+        if not handle.state_path.is_file():
+            raise FileNotFoundError("session not found for document fingerprint")
+        state = json.loads(handle.state_path.read_text(encoding="utf-8"))
+        if state.get("document_fingerprint") != document_fingerprint:
+            raise ValueError("session document fingerprint does not match")
+        return handle, state
+
+    def _session_handle(
+        self, document_fingerprint: str, session_id: str
+    ) -> SessionHandle:
         session_directory = (
             self.data_root
             / "documents"
@@ -271,18 +289,12 @@ class SessionRepository:
             / "sessions"
             / session_id
         )
-        handle = SessionHandle(
+        return SessionHandle(
             session_id=session_id,
             directory=session_directory,
             state_path=session_directory / "state.json",
             markdown_path=session_directory / "session.md",
         )
-        if not handle.state_path.is_file():
-            raise FileNotFoundError("session not found for document fingerprint")
-        state = json.loads(handle.state_path.read_text(encoding="utf-8"))
-        if state.get("document_fingerprint") != document_fingerprint:
-            raise ValueError("session document fingerprint does not match")
-        return handle, state
 
     @staticmethod
     def _document_key(document_fingerprint: str) -> str:
