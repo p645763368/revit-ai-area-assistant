@@ -20,6 +20,17 @@ class SharedContractExamplesTests(unittest.TestCase):
                 Draft202012Validator.check_schema(schema)
                 Draft202012Validator(schema).validate(example)
 
+    def test_every_feature_example_conforms_to_its_public_envelope(self):
+        for example_path in (CONTRACTS / "examples").glob("*.json"):
+            with self.subTest(example=example_path.name):
+                example = json.loads(example_path.read_text(encoding="utf-8"))
+                schema = json.loads(
+                    (CONTRACTS / "{}.schema.json".format(example["message_type"])).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                Draft202012Validator(schema).validate(example)
+
 
 if __name__ == "__main__":
     unittest.main()

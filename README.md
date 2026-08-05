@@ -8,7 +8,7 @@
 - [产品与技术规格 Issue #1](https://github.com/p645763368/revit-ai-area-assistant/issues/1)
 - [全部开发任务](https://github.com/p645763368/revit-ai-area-assistant/issues)
 
-当前第一个可开始的开发任务是 [Issue #2：建立可并行开发的工程骨架](https://github.com/p645763368/revit-ai-area-assistant/issues/2)。
+工程骨架 [Issue #2](https://github.com/p645763368/revit-ai-area-assistant/issues/2) 已完成。当前波次的 [Issue #3](https://github.com/p645763368/revit-ai-area-assistant/issues/3)、[#4](https://github.com/p645763368/revit-ai-area-assistant/issues/4) 和 [#5](https://github.com/p645763368/revit-ai-area-assistant/issues/5) 可以在独立worktree中并行开发。
 
 > 安全提醒：禁止向GitHub提交RVT文件、API密钥、项目截图、运行日志或真实项目数据。
 
@@ -44,6 +44,8 @@ python -m area_assistant_agent --serve
 ```
 
 `AI_AREA_ASSISTANT_BASE_URL`默认使用上面的Demo中转地址，`AI_AREA_ASSISTANT_PORT`默认是`8765`，模型请求超时默认30秒并可通过`AI_AREA_ASSISTANT_TIMEOUT_SECONDS`调整。面板自动启动Agent时会查找当前CPython、`py`或`python`；若未找到，请把Python 3.9或更高版本解释器的完整路径写入用户级`AI_AREA_ASSISTANT_PYTHON`环境变量。真实API密钥不要写入PowerShell脚本、`.env`、README或仓库文件。
+
+pyRevit面板使用6.5.3默认的IronPython Forms后端；模型API请求始终由独立的现代CPython Agent执行。不要给扩展的`startup.py`或按钮脚本添加`#! python3`，因为当前pyRevit CPython Forms后端不提供Dockable Pane API。
 
 若Windows中的`python`命中了Microsoft Store占位程序，请使用已安装Python解释器的完整路径执行相同命令。
 

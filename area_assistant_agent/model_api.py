@@ -22,7 +22,7 @@ class OpenAICompatibleClient:
             raise ModelApiError(
                 "model_not_configured",
                 "Model API credentials or model name are not configured.",
-                retryable=False,
+                retryable=True,
             )
         body = json.dumps(
             {
@@ -58,7 +58,7 @@ class OpenAICompatibleClient:
                         raise ModelApiError(
                             "model_protocol_error",
                             "Model API returned an incompatible streaming response.",
-                            retryable=False,
+                            retryable=True,
                         ) from exc
                     if delta:
                         yield delta
@@ -66,7 +66,7 @@ class OpenAICompatibleClient:
             raise ModelApiError(
                 "model_http_error",
                 "Model API request failed with HTTP status {}.".format(exc.code),
-                retryable=exc.code == 429 or exc.code >= 500,
+                retryable=True,
             ) from exc
         except (socket.timeout, TimeoutError) as exc:
             raise ModelApiError(

@@ -25,6 +25,13 @@ class RepositoryBaselineTests(unittest.TestCase):
 
         self.assertEqual(opened_panels, ["16f1e56c-b758-4a1c-bb5d-2af725692ede"])
 
+    def test_pyrevit_dockable_panel_uses_the_supported_ironpython_forms_backend(self):
+        startup = ROOT / "pyrevit" / "AI Area Assistant.extension" / "startup.py"
+        command = ROOT / "pyrevit" / "AI Area Assistant.extension" / "AI Area Assistant.tab" / "Assistant.panel" / "Open.pushbutton" / "script.py"
+
+        self.assertFalse(startup.read_text(encoding="utf-8").startswith("#! python3"))
+        self.assertFalse(command.read_text(encoding="utf-8").startswith("#! python3"))
+
     def test_sensitive_runtime_artifacts_are_ignored(self):
         sensitive_paths = [
             "sample.rvt",

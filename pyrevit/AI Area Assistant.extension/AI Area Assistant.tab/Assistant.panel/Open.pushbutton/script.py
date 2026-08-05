@@ -1,4 +1,3 @@
-#! python3
 """Show the dockable AI Area Assistant panel registered at startup."""
 
 from pyrevit import forms

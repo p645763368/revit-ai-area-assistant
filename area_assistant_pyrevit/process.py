@@ -1,9 +1,9 @@
 """Start the standalone CPython Agent without opening a console window."""
 
 import os
-import shutil
 import subprocess
 import sys
+from distutils.spawn import find_executable
 
 
 def _python_command():
@@ -13,10 +13,10 @@ def _python_command():
     executable = sys.executable
     if executable and os.path.basename(executable).lower().startswith("python"):
         return [executable]
-    launcher = shutil.which("py")
+    launcher = find_executable("py")
     if launcher:
         return [launcher, "-3"]
-    python = shutil.which("python")
+    python = find_executable("python")
     if python:
         return [python]
     raise RuntimeError(
@@ -25,11 +25,12 @@ def _python_command():
 
 def start_agent_process(repository_root):
     command = _python_command() + ["-m", "area_assistant_agent", "--serve"]
-    return subprocess.Popen(
-        command,
-        cwd=repository_root,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+    with open(os.devnull, "rb") as null_input, open(os.devnull, "ab") as null_output:
+        return subprocess.Popen(
+            command,
+            cwd=repository_root,
+            stdin=null_input,
+            stdout=null_output,
+            stderr=null_output,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )

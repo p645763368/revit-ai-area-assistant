@@ -3,12 +3,14 @@
 import json
 import time
 import uuid
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
+try:
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
+except ImportError:  # IronPython 2.7 in pyRevit
+    from urllib2 import HTTPError, Request, URLError, urlopen
 
-CONTRACT_VERSION = "1.0"
-SERVICE_NAME = "revit-ai-area-assistant-agent"
+from area_assistant_agent import CONTRACT_VERSION, SERVICE_NAME
 
 
 class AgentConnectionError(Exception):
@@ -46,7 +48,6 @@ class AgentClient:
             self.base_url + "/v1/chat",
             data=json.dumps(envelope, ensure_ascii=False).encode("utf-8"),
             headers={"Content-Type": "application/json"},
-            method="POST",
         )
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
@@ -54,7 +55,7 @@ class AgentClient:
                     if raw_line.strip():
                         yield json.loads(raw_line.decode("utf-8"))
         except (HTTPError, OSError, ValueError, URLError) as exc:
-            raise AgentConnectionError("Local Agent connection failed.") from exc
+            raise AgentConnectionError("Local Agent connection failed: {}".format(exc))
 
 
 def ensure_agent_available(client, start_agent, attempts=20, delay_seconds=0.25):

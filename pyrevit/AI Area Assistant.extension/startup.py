@@ -1,4 +1,3 @@
-#! python3
 """Register the AI Area Assistant dockable pane once per Revit session."""
 
 import os

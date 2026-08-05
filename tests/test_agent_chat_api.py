@@ -16,8 +16,8 @@ class _StreamingModelHandler(BaseHTTPRequestHandler):
         content_length = int(self.headers["Content-Length"])
         self.server.received = json.loads(self.rfile.read(content_length))
         self.server.authorization = self.headers.get("Authorization")
-        if "/failure/" in self.path:
-            self.send_response(503)
+        if "/failure/" in self.path or "/auth/" in self.path:
+            self.send_response(401 if "/auth/" in self.path else 503)
             self.end_headers()
             self.wfile.write(b"Authorization: Bearer unit-test")
             return
@@ -140,6 +140,14 @@ class AgentChatApiTests(unittest.TestCase):
 
         self.assertLess(time.monotonic() - started, 1)
         self.assertEqual(events[-1]["code"], "model_timeout")
+        self.assertTrue(events[-1]["retryable"])
+
+    def test_model_authentication_failure_can_be_retried_after_configuration_is_fixed(self):
+        self._restart_agent("auth", timeout_seconds=1)
+
+        events = self._send_chat("req-auth")
+
+        self.assertEqual(events[-1]["code"], "model_http_error")
         self.assertTrue(events[-1]["retryable"])
 
     def _restart_agent(self, prefix, timeout_seconds):

@@ -1,4 +1,7 @@
-"""WPF dockable pane hosted by pyRevit."""
+# -*- coding: utf-8 -*-
+"""WPF dockable pane hosted by pyRevit's IronPython Forms backend."""
+
+from __future__ import unicode_literals
 
 import os
 import threading
@@ -41,7 +44,8 @@ class AiAreaAssistantPanel(forms.WPFPanel):
                 lambda: start_agent_process(_REPOSITORY_ROOT),
             )
         except Exception as exc:
-            self._dispatch(lambda: self._connection_failed(str(exc)))
+            message = str(exc)
+            self._dispatch(lambda text=message: self._connection_failed(text))
             return
         if available:
             self._dispatch(self._connection_ready)
@@ -96,7 +100,8 @@ class AiAreaAssistantPanel(forms.WPFPanel):
                         )
                     )
         except AgentConnectionError as exc:
-            self._dispatch(lambda: self._reply_failed(str(exc), True))
+            message = str(exc)
+            self._dispatch(lambda text=message: self._reply_failed(text, True))
 
     def _reply_completed(self):
         self.Transcript.AppendText("\n\n")
