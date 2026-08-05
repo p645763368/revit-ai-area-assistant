@@ -63,6 +63,8 @@ class SharedContractExamplesTests(unittest.TestCase):
             "action": "chat.stream",
             "payload": {},
         }
+        whitespace_request = dict(invalid_request)
+        whitespace_request["payload"] = {"message": "   "}
         invalid_delta = {
             "contract_version": "1.0",
             "message_type": "response",
@@ -73,6 +75,10 @@ class SharedContractExamplesTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             Draft202012Validator(request_schema, registry=registry).validate(invalid_request)
+        with self.assertRaises(ValidationError):
+            Draft202012Validator(request_schema, registry=registry).validate(
+                whitespace_request
+            )
         with self.assertRaises(ValidationError):
             Draft202012Validator(response_schema, registry=registry).validate(invalid_delta)
 
