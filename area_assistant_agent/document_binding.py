@@ -44,6 +44,16 @@ class DocumentBindingSession:
         self._rvt_mcp_status = "unchecked"
         self._paused_reason: Optional[str] = None
 
+    def restore(self, snapshot: DocumentSnapshot) -> None:
+        """Restore the last Agent-approved identity for a new one-shot process."""
+        self._bound_identity = (
+            snapshot.instance_id,
+            snapshot.document_fingerprint,
+            canonical_document_path(snapshot.document_path),
+        )
+        self._rvt_mcp_status = "verified"
+        self._paused_reason = None
+
     def bind(self, snapshot: DocumentSnapshot, rvt_mcp_snapshot: RvtMcpSnapshot) -> dict:
         self._paused_reason = None
         self._bound_identity = (
@@ -51,18 +61,9 @@ class DocumentBindingSession:
             snapshot.document_fingerprint,
             canonical_document_path(snapshot.document_path),
         )
-        expected_instance_id = f"revit-{rvt_mcp_snapshot.instance_pid}"
-        if snapshot.instance_id != expected_instance_id:
+        self._paused_reason = self._rvt_mcp_pause_reason(snapshot, rvt_mcp_snapshot)
+        if self._paused_reason is not None:
             self._rvt_mcp_status = "mismatch"
-            self._paused_reason = "rvt_mcp_instance_mismatch"
-            return self._status(
-                snapshot,
-                binding_status="paused",
-                pause_reason=self._paused_reason,
-            )
-        if snapshot.active_view_id != rvt_mcp_snapshot.active_view_id:
-            self._rvt_mcp_status = "mismatch"
-            self._paused_reason = "rvt_mcp_view_mismatch"
             return self._status(
                 snapshot,
                 binding_status="paused",
@@ -97,17 +98,23 @@ class DocumentBindingSession:
             self._paused_reason = "document_changed"
             return self._status(snapshot, binding_status="paused", pause_reason=self._paused_reason)
         if rvt_mcp_snapshot is not None:
-            expected_instance_id = f"revit-{rvt_mcp_snapshot.instance_pid}"
-            if snapshot.instance_id != expected_instance_id:
+            self._paused_reason = self._rvt_mcp_pause_reason(snapshot, rvt_mcp_snapshot)
+            if self._paused_reason is not None:
                 self._rvt_mcp_status = "mismatch"
-                self._paused_reason = "rvt_mcp_instance_mismatch"
-                return self._status(snapshot, binding_status="paused", pause_reason=self._paused_reason)
-            if snapshot.active_view_id != rvt_mcp_snapshot.active_view_id:
-                self._rvt_mcp_status = "mismatch"
-                self._paused_reason = "rvt_mcp_view_mismatch"
                 return self._status(snapshot, binding_status="paused", pause_reason=self._paused_reason)
             self._rvt_mcp_status = "verified"
         return self._status(snapshot, binding_status="bound", pause_reason=None)
+
+    @staticmethod
+    def _rvt_mcp_pause_reason(
+        snapshot: DocumentSnapshot,
+        rvt_mcp_snapshot: RvtMcpSnapshot,
+    ) -> Optional[str]:
+        if snapshot.instance_id != f"revit-{rvt_mcp_snapshot.instance_pid}":
+            return "rvt_mcp_instance_mismatch"
+        if snapshot.active_view_id != rvt_mcp_snapshot.active_view_id:
+            return "rvt_mcp_view_mismatch"
+        return None
 
     def _status(self, snapshot: DocumentSnapshot, binding_status: str, pause_reason: Optional[str]) -> dict:
         current_path = canonical_document_path(snapshot.document_path)

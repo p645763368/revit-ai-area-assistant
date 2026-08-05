@@ -63,6 +63,23 @@ Issue #4新增两层只读安全检查：
 
 设置后需完全退出并重新启动Revit。路径匹配只是候选授权；只有Agent确认同一个rvt-mcp实例和活动视图后，`write_allowed`才会为`true`。未保存文档、其他模型、原模型、切换后的文档以及rvt-mcp证据不一致时始终拒绝写入。
 
+pyRevit通过独立CPython运行Agent，需要配置解释器路径。扩展仍位于本仓库时会自动推导仓库根目录；复制到其他位置时还需显式配置仓库根目录：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+  "AI_AREA_ASSISTANT_AGENT_PYTHON",
+  "<现代CPython的python.exe绝对路径>",
+  "User"
+)
+[Environment]::SetEnvironmentVariable(
+  "AI_AREA_ASSISTANT_REPOSITORY_ROOT",
+  "<本仓库根目录绝对路径>",
+  "User"
+)
+```
+
+Agent会优先使用`AI_AREA_ASSISTANT_RVT_MCP_COMMAND`指定的rvt-mcp服务命令；未设置时，从`%LOCALAPPDATA%\RvtMcp\rvt\server\`自动选择已安装服务。该运行链只调用目标发现、目标验证和当前视图读取工具。
+
 Revit 2026人工验收步骤见[`docs/issue-4-revit-manual-test.md`](docs/issue-4-revit-manual-test.md)。
 
 ## 共享契约
