@@ -31,7 +31,10 @@ class RepositoryBaselineTests(unittest.TestCase):
 
         with patch.dict(sys.modules, {"pyrevit": fake_pyrevit}), patch.dict(
             "os.environ",
-            {"AI_AREA_ASSISTANT_TEST_DOCUMENT": r"D:\RevitTests\area-assistant-development-copy.rvt"},
+            {
+                "AI_AREA_ASSISTANT_AGENT_PYTHON": "",
+                "AI_AREA_ASSISTANT_TEST_DOCUMENT": r"D:\RevitTests\area-assistant-development-copy.rvt",
+            },
         ):
             runpy.run_path(str(script))
 
