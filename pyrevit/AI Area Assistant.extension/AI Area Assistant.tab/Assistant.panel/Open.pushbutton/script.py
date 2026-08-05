@@ -1,132 +1,22 @@
-"""Show the current Revit document identity and safe binding status."""
-
-__persistentengine__ = True
+"""Show the dockable AI Area Assistant panel registered at startup."""
 
 import os
 import sys
 
-from pyrevit import forms, revit
-
-try:
-    from pyrevit import HOST_APP, UI, framework, script as pyrevit_script
-except ImportError:
-    HOST_APP = None
-    UI = None
-    framework = None
-    pyrevit_script = None
+from pyrevit import forms
 
 
-extension_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-extension_lib = os.path.join(extension_root, "lib")
-if extension_lib not in sys.path:
-    sys.path.insert(0, extension_lib)
+current = os.path.dirname(__file__)
+while current and not current.endswith(".extension"):
+    parent = os.path.dirname(current)
+    if parent == current:
+        raise RuntimeError("AI Area Assistant extension root was not found.")
+    current = parent
+repository_root = os.path.dirname(os.path.dirname(current))
+if repository_root not in sys.path:
+    sys.path.insert(0, repository_root)
 
-from area_assistant_revit.agent_bridge import get_agent_bridge
-from area_assistant_revit.document_status import collect_document_status
-
-
-BOUND_FINGERPRINT_KEY = "AI_AREA_ASSISTANT_BOUND_DOCUMENT_FINGERPRINT"
-PAUSE_REASON_KEY = "AI_AREA_ASSISTANT_DOCUMENT_PAUSE_REASON"
-VIEW_HANDLER_KEY = "AI_AREA_ASSISTANT_VIEW_HANDLER"
-
-
-def _on_view_activated(sender, event_args):
-    try:
-        bound_fingerprint = pyrevit_script.get_envvar(BOUND_FINGERPRINT_KEY)
-        if not bound_fingerprint:
-            return
-        current = collect_document_status(
-            event_args.CurrentActiveView.Document,
-            os.environ.get("AI_AREA_ASSISTANT_TEST_DOCUMENT", ""),
-        )
-        if current["document_fingerprint"] != bound_fingerprint:
-            pyrevit_script.set_envvar(PAUSE_REASON_KEY, "document_changed")
-    except Exception:
-        pyrevit_script.set_envvar(PAUSE_REASON_KEY, "document_observation_failed")
+from area_assistant_pyrevit import PANEL_ID
 
 
-def _ensure_document_switch_guard():
-    if pyrevit_script is None or pyrevit_script.get_envvar(VIEW_HANDLER_KEY):
-        return
-    handler = framework.EventHandler[UI.Events.ViewActivatedEventArgs](_on_view_activated)
-    HOST_APP.uiapp.ViewActivated += handler
-    pyrevit_script.set_envvar(VIEW_HANDLER_KEY, handler)
-
-
-status = collect_document_status(
-    revit.doc,
-    os.environ.get("AI_AREA_ASSISTANT_TEST_DOCUMENT", ""),
-)
-path_match = "yes" if status["authorized_path_match"] else "no"
-view = status["active_view"]
-binding_status = "pending"
-rvt_mcp_status = "unchecked"
-write_permission = "denied"
-pause_reason = None
-show_modal = True
-local_pause_reason = (
-    pyrevit_script.get_envvar(PAUSE_REASON_KEY) if pyrevit_script is not None else None
-)
-agent_python = os.environ.get("AI_AREA_ASSISTANT_AGENT_PYTHON", "").strip()
-repository_root = os.environ.get(
-    "AI_AREA_ASSISTANT_REPOSITORY_ROOT",
-    os.path.dirname(os.path.dirname(extension_root)),
-)
-if agent_python:
-    try:
-        agent_response = get_agent_bridge(agent_python, repository_root).query(
-            status,
-            local_pause_reason,
-        )
-        if agent_response is not None:
-            binding = agent_response["payload"]
-            binding_status = binding["binding_status"]
-            rvt_mcp_status = binding["rvt_mcp_status"]
-            write_permission = "allowed" if binding["write_allowed"] else "denied"
-            pause_reason = binding["pause_reason"]
-            if binding_status == "bound" and pyrevit_script is not None:
-                pyrevit_script.set_envvar(
-                    BOUND_FINGERPRINT_KEY,
-                    status["document_fingerprint"],
-                )
-                _ensure_document_switch_guard()
-        else:
-            pause_reason = "verification_running_close_wait_and_click_again"
-            show_modal = False
-            if hasattr(forms, "toast"):
-                forms.toast(
-                    "Document verification is running in the background. "
-                    "Wait up to 45 seconds, then click AI Area Assistant again.",
-                    title="AI Area Assistant",
-                )
-    except Exception as error:
-        binding_status = "unavailable"
-        pause_reason = "agent_error: {0}".format(error)
-
-if local_pause_reason:
-    binding_status = "paused"
-    write_permission = "denied"
-    pause_reason = local_pause_reason
-
-message = "\n".join(
-    [
-        "Revit instance: {0}".format(status["revit_instance_id"]),
-        "Document title: {0}".format(status["document_title"]),
-        "Document path: {0}".format(status["document_path"] or "<unsaved>"),
-        "Active view: {0} ({1})".format(view["name"], view["id"]),
-        "IsModified: {0}".format(status["is_modified"]),
-        "Authorized path match: {0}".format(path_match),
-        "Agent/rvt-mcp binding: {0}".format(binding_status),
-        "rvt-mcp status: {0}".format(rvt_mcp_status),
-        "Write permission: {0}".format(write_permission),
-        "Pause reason: {0}".format(pause_reason or "none"),
-    ]
-)
-
-
-if show_modal:
-    forms.alert(
-        message,
-        title="AI Area Assistant",
-        warn_icon=False,
-    )
+forms.open_dockable_panel(PANEL_ID)

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://revit-ai-area-assistant.local/contracts/v1/chat-response.schema.json",
+  "title": "Streaming chat response",
+  "allOf": [
+    {"$ref": "response.schema.json"},
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "status": {"const": "accepted"},
+            "payload": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "required": ["event"],
+                  "properties": {"event": {"const": "started"}}
+                },
+                {
+                  "additionalProperties": false,
+                  "required": ["delta"],
+                  "properties": {"delta": {"type": "string", "minLength": 1}}
+                }
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {"const": "completed"},
+            "payload": {
+              "additionalProperties": false,
+              "required": ["message"],
+              "properties": {"message": {"type": "string"}}
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

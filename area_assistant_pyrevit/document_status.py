@@ -1,4 +1,4 @@
-"""Collect a document snapshot without opening a Revit transaction."""
+"""Collect a Revit document snapshot without opening a transaction."""
 
 import hashlib
 import ntpath
@@ -28,7 +28,6 @@ def collect_document_status(document, authorized_document_path, process_id=None)
     authorized_path = _canonical_path(authorized_document_path)
     current_path = _canonical_path(document_path)
     instance_id = "revit-{0}".format(process_id if process_id is not None else os.getpid())
-
     return {
         "revit_instance_id": instance_id,
         "document_title": document.Title,
@@ -38,10 +37,7 @@ def collect_document_status(document, authorized_document_path, process_id=None)
             document.Title,
             project_information_id,
         ),
-        "active_view": {
-            "id": str(active_view.Id),
-            "name": active_view.Name,
-        },
+        "active_view": {"id": str(active_view.Id), "name": active_view.Name},
         "is_modified": bool(document.IsModified),
         "authorized_path_match": bool(authorized_path) and current_path == authorized_path,
     }

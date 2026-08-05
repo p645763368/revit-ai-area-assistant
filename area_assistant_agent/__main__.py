@@ -2,11 +2,15 @@ import argparse
 import json
 import os
 import sys
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from . import CONTRACT_VERSION, SERVICE_NAME
 from .binding_state_store import BindingStateStore
+from .config import AgentConfig
 from .document_status_runtime import resolve_document_status
 from .rvt_mcp_gateway import McpStdioClient
+from .server import create_server
 
 
 def readiness_payload():
@@ -17,20 +21,41 @@ def readiness_payload():
     }
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Revit AI Area Assistant local Agent")
-    actions = parser.add_mutually_exclusive_group(required=True)
-    actions.add_argument("--check", action="store_true", help="print readiness and exit")
-    actions.add_argument(
-        "--document-status",
-        action="store_true",
-        help="read a pyRevit snapshot from stdin and verify it through rvt-mcp",
-    )
-    args = parser.parse_args()
-    if args.check:
-        print(json.dumps(readiness_payload(), ensure_ascii=False, sort_keys=True))
-        return 0
+def _existing_agent_is_ready(config):
+    try:
+        with urlopen(
+            "http://127.0.0.1:{}/health".format(config.port), timeout=0.5
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        return (
+            payload.get("contract_version") == CONTRACT_VERSION
+            and payload.get("payload", {}).get("service") == SERVICE_NAME
+        )
+    except (OSError, ValueError, URLError):
+        return False
 
+
+def serve():
+    config = AgentConfig.from_environment()
+    if _existing_agent_is_ready(config):
+        print(json.dumps({"status": "already-running", "port": config.port}))
+        return
+    try:
+        server = create_server(config)
+    except OSError:
+        if _existing_agent_is_ready(config):
+            print(json.dumps({"status": "already-running", "port": config.port}))
+            return
+        raise
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+def document_status():
     request = json.load(sys.stdin)
     request_id = str(request.get("request_id", "document-status"))
     try:
@@ -68,6 +93,26 @@ def main() -> int:
         }
         print(json.dumps(response, ensure_ascii=False, sort_keys=True))
         return 1
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Revit AI Area Assistant local Agent")
+    actions = parser.add_mutually_exclusive_group(required=True)
+    actions.add_argument("--check", action="store_true", help="print readiness and exit")
+    actions.add_argument("--serve", action="store_true", help="serve the loopback HTTP API")
+    actions.add_argument(
+        "--document-status",
+        action="store_true",
+        help="read a pyRevit snapshot from stdin and verify it through rvt-mcp",
+    )
+    args = parser.parse_args()
+    if args.check:
+        print(json.dumps(readiness_payload(), ensure_ascii=False, sort_keys=True))
+        return 0
+    if args.serve:
+        serve()
+        return 0
+    return document_status()
 
 
 if __name__ == "__main__":

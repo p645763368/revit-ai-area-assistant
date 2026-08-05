@@ -12,4 +12,7 @@ Compatibility rules:
 
 The JSON Schema files are the source of truth. `examples/` contains reviewable sample messages, not real project data.
 
-Issue-specific payload contracts are additive files under `v1/actions/`. `revit-document-status-request.schema.json` and `revit-document-status.schema.json` define the document-status request and binding result shared by the pyRevit client, local Agent and later Dockable Pane; they reuse the existing v1 request/response envelope fields without changing their meaning.
+Feature contracts:
+
+- [`v1/chat.md`](v1/chat.md) defines the backward-compatible `chat.stream` action and its streamed response payloads.
+- `v1/actions/revit-document-status-request.schema.json` and `revit-document-status.schema.json` define the document-status request and binding result shared by the pyRevit panel, local Agent and rvt-mcp integration. They reuse the existing v1 request/response envelope fields without changing their meaning.
