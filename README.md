@@ -8,7 +8,7 @@
 - [产品与技术规格 Issue #1](https://github.com/p645763368/revit-ai-area-assistant/issues/1)
 - [全部开发任务](https://github.com/p645763368/revit-ai-area-assistant/issues)
 
-当前第一个可开始的开发任务是 [Issue #2：建立可并行开发的工程骨架](https://github.com/p645763368/revit-ai-area-assistant/issues/2)。
+Issue #2工程基线已经完成。后续任务按照各Issue的`Blocked by`关系在独立Worktree中开发。
 
 > 安全提醒：禁止向GitHub提交RVT文件、API密钥、项目截图、运行日志或真实项目数据。
 
@@ -31,7 +31,7 @@ python -m area_assistant_agent --check
 python -m unittest discover -s tests -v
 ```
 
-Agent就绪检查应输出`status: ready`和`contract_version: 1.0`。当前入口不连接模型API、不调用rvt-mcp，也不写入Revit。
+Agent就绪检查应输出`status: ready`和`contract_version: 1.0`。当前入口不连接模型API，也不写入Revit。
 
 若Windows中的`python`命中了Microsoft Store占位程序，请使用已安装Python解释器的完整路径执行相同命令。
 
@@ -40,9 +40,30 @@ Agent就绪检查应输出`status: ready`和`contract_version: 1.0`。当前入�
 1. 在pyRevit中把`pyrevit/AI Area Assistant.extension`配置为扩展目录。
 2. 重新加载pyRevit。
 3. 打开`AI Area Assistant`选项卡，点击`AI Area Assistant`按钮。
-4. 应出现“Engineering baseline is ready”提示。
+4. 应显示Revit实例、文档标题、完整路径、活动视图和`IsModified`。
 
-此人工检查不修改或保存RVT。正式Dockable Pane、Agent自动启动和模型交互由后续Issue实现。
+此人工检查不修改或保存RVT。正式Dockable Pane和Agent自动启动由Issue #3实现。
+
+## 文档安全绑定
+
+Issue #4新增两层只读安全检查：
+
+- pyRevit入口读取当前进程、文档完整路径、活动视图、修改状态和文档指纹。
+- 本地Agent将pyRevit快照与rvt-mcp返回的Revit进程和活动视图交叉验证，并把任务绑定到一个实例和一个文档。任何实例、文档或视图证据冲突都会暂停任务并撤销写入许可。
+
+指定开发测试副本的完整路径只通过用户级环境变量提供，不写入仓库：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+  "AI_AREA_ASSISTANT_TEST_DOCUMENT",
+  "<开发测试副本的绝对路径>",
+  "User"
+)
+```
+
+设置后需完全退出并重新启动Revit。路径匹配只是候选授权；只有Agent确认同一个rvt-mcp实例和活动视图后，`write_allowed`才会为`true`。未保存文档、其他模型、原模型、切换后的文档以及rvt-mcp证据不一致时始终拒绝写入。
+
+Revit 2026人工验收步骤见[`docs/issue-4-revit-manual-test.md`](docs/issue-4-revit-manual-test.md)。
 
 ## 共享契约
 

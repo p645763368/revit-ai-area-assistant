@@ -11,3 +11,5 @@ Compatibility rules:
 - Feature-specific payload fields belong in later tickets; this baseline intentionally defines only the shared envelope.
 
 The JSON Schema files are the source of truth. `examples/` contains reviewable sample messages, not real project data.
+
+Issue-specific payload contracts are additive files under `v1/actions/`. `revit-document-status.schema.json` defines the document identity and binding result shared by the pyRevit panel and local Agent; it does not change any existing v1 envelope field.
