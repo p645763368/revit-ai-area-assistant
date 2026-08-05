@@ -7,6 +7,7 @@ import queue
 import shlex
 import subprocess
 import threading
+import time
 from typing import Any, IO, Optional
 
 from .document_binding import RvtMcpSnapshot
@@ -45,8 +46,10 @@ class McpStdioClient:
         self._timeout_seconds = timeout_seconds
         self._messages: queue.Queue[Optional[str]] = queue.Queue()
         self._reader: Optional[threading.Thread] = None
+        self._deadline: Optional[float] = None
 
     def __enter__(self) -> "McpStdioClient":
+        self._deadline = time.monotonic() + self._timeout_seconds
         self._process = subprocess.Popen(
             self._command,
             stdin=subprocess.PIPE,
@@ -123,8 +126,11 @@ class McpStdioClient:
         stdin.flush()
 
     def _read(self) -> dict:
+        timeout = self._timeout_seconds
+        if self._deadline is not None:
+            timeout = max(0.0, self._deadline - time.monotonic())
         try:
-            line = self._messages.get(timeout=self._timeout_seconds)
+            line = self._messages.get(timeout=timeout)
         except queue.Empty as error:
             raise RuntimeError("rvt-mcp response timed out") from error
         if line is None:

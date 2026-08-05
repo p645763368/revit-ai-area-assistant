@@ -94,9 +94,28 @@ class AgentClient:
         try:
             response = urlopen(request, timeout=self.timeout_seconds)
             try:
-                return json.loads(response.read().decode("utf-8"))
+                result = json.loads(response.read().decode("utf-8"))
             finally:
                 response.close()
+            payload = result.get("payload")
+            if (
+                result.get("contract_version") != CONTRACT_VERSION
+                or result.get("message_type") != "response"
+                or result.get("request_id") != request_id
+                or result.get("status") != "completed"
+                or not isinstance(payload, dict)
+                or not isinstance(payload.get("write_allowed"), bool)
+                or payload.get("binding_status")
+                not in ("bound", "paused", "unavailable")
+                or payload.get("rvt_mcp_status")
+                not in ("verified", "mismatch", "unchecked")
+            ):
+                raise AgentConnectionError(
+                    "Document verification returned an incompatible v1 response."
+                )
+            return result
+        except AgentConnectionError:
+            raise
         except (HTTPError, OSError, ValueError, URLError) as exc:
             raise AgentConnectionError("Document verification failed: {}".format(exc))
 

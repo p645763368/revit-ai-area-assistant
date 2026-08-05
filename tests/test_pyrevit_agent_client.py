@@ -31,8 +31,7 @@ class _FakeAgentHandler(BaseHTTPRequestHandler):
         request = json.loads(self.rfile.read(length))
         self.server.request_payload = request
         if self.path == "/v1/document-status":
-            body = json.dumps(
-                {
+            response_payload = {
                     "contract_version": "1.0",
                     "message_type": "response",
                     "request_id": request["request_id"],
@@ -44,7 +43,10 @@ class _FakeAgentHandler(BaseHTTPRequestHandler):
                         "pause_reason": None,
                     },
                 }
-            ).encode("utf-8")
+            response_payload.update(
+                getattr(self.server, "document_response_override", {})
+            )
+            body = json.dumps(response_payload).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -149,6 +151,34 @@ class PyRevitAgentClientTests(unittest.TestCase):
             "authorized_path_match",
             self.server.request_payload["payload"]["current_document"],
         )
+
+    def test_panel_client_rejects_unsupported_document_response_version(self):
+        self.server.document_response_override = {"contract_version": "2.0"}
+        snapshot = {
+            "revit_instance_id": "revit-19880",
+            "document_title": "Development Copy",
+            "document_path": r"D:\test\development-copy.rvt",
+            "document_fingerprint": "sha256:document",
+            "active_view": {"id": "42", "name": "Level 1"},
+            "is_modified": False,
+        }
+
+        with self.assertRaisesRegex(Exception, "incompatible v1 response"):
+            self.client.document_status(snapshot, request_id="req-document-version")
+
+    def test_panel_client_rejects_document_response_for_another_request(self):
+        self.server.document_response_override = {"request_id": "stale-request"}
+        snapshot = {
+            "revit_instance_id": "revit-19880",
+            "document_title": "Development Copy",
+            "document_path": r"D:\test\development-copy.rvt",
+            "document_fingerprint": "sha256:document",
+            "active_view": {"id": "42", "name": "Level 1"},
+            "is_modified": False,
+        }
+
+        with self.assertRaisesRegex(Exception, "incompatible v1 response"):
+            self.client.document_status(snapshot, request_id="req-document-current")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import unittest
+import time
 
 from area_assistant_agent.rvt_mcp_gateway import McpStdioClient, read_current_revit_evidence
 
@@ -70,6 +71,16 @@ class RvtMcpGatewayTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "response timed out"):
             client._read()
+
+    def test_mcp_timeout_is_a_single_deadline_for_the_whole_session(self):
+        client = McpStdioClient(["unused"], timeout_seconds=0.01)
+        client._deadline = time.monotonic() - 1
+
+        started = time.monotonic()
+        with self.assertRaisesRegex(RuntimeError, "response timed out"):
+            client._read()
+
+        self.assertLess(time.monotonic() - started, 0.1)
 
 
 if __name__ == "__main__":
