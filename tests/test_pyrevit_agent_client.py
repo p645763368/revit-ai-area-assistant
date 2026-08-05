@@ -38,6 +38,12 @@ class _FakeAgentHandler(BaseHTTPRequestHandler):
                     "status": "completed",
                     "payload": {
                         "binding_status": "bound",
+                        "revit_instance_id": "revit-19880",
+                        "document_title": "Development Copy",
+                        "document_path": r"D:\test\development-copy.rvt",
+                        "document_fingerprint": "sha256:document",
+                        "active_view": {"id": "42", "name": "Level 1"},
+                        "is_modified": False,
                         "rvt_mcp_status": "verified",
                         "write_allowed": True,
                         "pause_reason": None,
@@ -179,6 +185,27 @@ class PyRevitAgentClientTests(unittest.TestCase):
 
         with self.assertRaisesRegex(Exception, "incompatible v1 response"):
             self.client.document_status(snapshot, request_id="req-document-current")
+
+    def test_panel_client_rejects_document_response_missing_required_evidence(self):
+        self.server.document_response_override = {
+            "payload": {
+                "binding_status": "bound",
+                "rvt_mcp_status": "verified",
+                "write_allowed": True,
+                "pause_reason": None,
+            }
+        }
+        snapshot = {
+            "revit_instance_id": "revit-19880",
+            "document_title": "Development Copy",
+            "document_path": r"D:\test\development-copy.rvt",
+            "document_fingerprint": "sha256:document",
+            "active_view": {"id": "42", "name": "Level 1"},
+            "is_modified": False,
+        }
+
+        with self.assertRaisesRegex(Exception, "incompatible v1 response"):
+            self.client.document_status(snapshot, request_id="req-document-incomplete")
 
 
 if __name__ == "__main__":

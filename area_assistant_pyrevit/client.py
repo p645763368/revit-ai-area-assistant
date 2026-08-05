@@ -12,6 +12,11 @@ except ImportError:  # IronPython 2.7 in pyRevit
 
 from area_assistant_agent import CONTRACT_VERSION, SERVICE_NAME
 
+try:
+    STRING_TYPES = (basestring,)  # type: ignore[name-defined]
+except NameError:
+    STRING_TYPES = (str,)
+
 
 class AgentConnectionError(Exception):
     pass
@@ -98,17 +103,58 @@ class AgentClient:
             finally:
                 response.close()
             payload = result.get("payload")
+            required_payload_keys = {
+                "binding_status",
+                "revit_instance_id",
+                "document_title",
+                "document_path",
+                "document_fingerprint",
+                "active_view",
+                "is_modified",
+                "rvt_mcp_status",
+                "write_allowed",
+                "pause_reason",
+            }
+            valid_pause_reasons = (
+                None,
+                "not_bound",
+                "revit_instance_changed",
+                "document_changed",
+                "document_observation_failed",
+                "rvt_mcp_instance_mismatch",
+                "rvt_mcp_document_mismatch",
+                "rvt_mcp_view_mismatch",
+                "rvt_mcp_modified_mismatch",
+            )
+            active_view = payload.get("active_view") if isinstance(payload, dict) else None
             if (
+                set(result)
+                != {"contract_version", "message_type", "request_id", "status", "payload"}
+                or
                 result.get("contract_version") != CONTRACT_VERSION
                 or result.get("message_type") != "response"
                 or result.get("request_id") != request_id
                 or result.get("status") != "completed"
                 or not isinstance(payload, dict)
+                or set(payload) != required_payload_keys
+                or payload.get("binding_status") not in ("unbound", "bound", "paused")
+                or not isinstance(payload.get("revit_instance_id"), STRING_TYPES)
+                or not payload.get("revit_instance_id")
+                or not isinstance(payload.get("document_title"), STRING_TYPES)
+                or not isinstance(payload.get("document_path"), STRING_TYPES)
+                or not isinstance(payload.get("document_fingerprint"), STRING_TYPES)
+                or not payload.get("document_fingerprint")
+                or not isinstance(active_view, dict)
+                or set(active_view) != {"id", "name"}
+                or not isinstance(active_view.get("id"), STRING_TYPES)
+                or not active_view.get("id")
+                or not isinstance(active_view.get("name"), STRING_TYPES)
+                or not active_view.get("name")
+                or not isinstance(payload.get("is_modified"), bool)
                 or not isinstance(payload.get("write_allowed"), bool)
-                or payload.get("binding_status")
-                not in ("bound", "paused", "unavailable")
                 or payload.get("rvt_mcp_status")
                 not in ("verified", "mismatch", "unchecked")
+                or payload.get("pause_reason") not in valid_pause_reasons
             ):
                 raise AgentConnectionError(
                     "Document verification returned an incompatible v1 response."
