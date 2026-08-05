@@ -13,6 +13,14 @@ class ModelApiError(Exception):
         self.retryable = retryable
 
 
+def _protocol_error():
+    return ModelApiError(
+        "model_protocol_error",
+        "Model API returned an incompatible streaming response.",
+        retryable=True,
+    )
+
+
 class OpenAICompatibleClient:
     def __init__(self, config):
         self._config = config
@@ -53,15 +61,28 @@ class OpenAICompatibleClient:
                         return
                     try:
                         event = json.loads(data)
-                        delta = event["choices"][0]["delta"].get("content")
-                    except (KeyError, IndexError, TypeError, ValueError) as exc:
-                        raise ModelApiError(
-                            "model_protocol_error",
-                            "Model API returned an incompatible streaming response.",
-                            retryable=True,
-                        ) from exc
-                    if delta:
-                        yield delta
+                    except ValueError as exc:
+                        raise _protocol_error() from exc
+                    if not isinstance(event, dict):
+                        raise _protocol_error()
+                    choices = event.get("choices")
+                    if choices == [] or (choices is None and "usage" in event):
+                        continue
+                    if not isinstance(choices, list) or not isinstance(choices[0], dict):
+                        raise _protocol_error()
+                    choice = choices[0]
+                    delta = choice.get("delta")
+                    if delta is None and choice.get("finish_reason") is not None:
+                        continue
+                    if not isinstance(delta, dict):
+                        raise _protocol_error()
+                    content = delta.get("content")
+                    if content is None:
+                        continue
+                    if not isinstance(content, str):
+                        raise _protocol_error()
+                    if content:
+                        yield content
         except HTTPError as exc:
             raise ModelApiError(
                 "model_http_error",

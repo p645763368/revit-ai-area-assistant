@@ -31,6 +31,15 @@ class _StreamingModelHandler(BaseHTTPRequestHandler):
         for payload in (
             {"choices": [{"delta": {"content": "你好"}}]},
             {"choices": [{"delta": {"content": "，建筑师"}}]},
+            {"choices": [{"finish_reason": "stop"}]},
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 4,
+                    "total_tokens": 9,
+                },
+            },
         ):
             self.wfile.write(("data: " + json.dumps(payload) + "\n\n").encode("utf-8"))
             self.wfile.flush()
