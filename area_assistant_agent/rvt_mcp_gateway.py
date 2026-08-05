@@ -124,13 +124,8 @@ def read_current_revit_evidence(client: Any) -> RvtMcpSnapshot:
     if discovery.get("count") != 1 or len(targets) != 1:
         raise RuntimeError("document binding requires exactly one Revit target")
 
-    target = targets[0]
-    year = str(target["year"])
-    switched = client.call_tool(
-        "revit_switch_target",
-        {"version": year, "verify": True},
-    )
-    if not switched.get("ok") or not switched.get("verified"):
-        raise RuntimeError("rvt-mcp target verification failed")
-    current_view = client.call_tool("revit_get_current_view_info", {})
-    return RvtMcpSnapshot.from_tool_results(target, current_view)
+    # A pyRevit command owns Revit's UI thread while this check runs. Calling a
+    # Revit-backed MCP tool here would wait for that same thread and deadlock.
+    # Discovery is independent of Revit's UI thread and exposes the live PID,
+    # which is the evidence needed to corroborate pyRevit's instance identity.
+    return RvtMcpSnapshot.from_discovery_target(targets[0])

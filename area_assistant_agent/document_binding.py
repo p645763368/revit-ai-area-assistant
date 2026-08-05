@@ -25,16 +25,14 @@ class DocumentSnapshot:
 @dataclass(frozen=True)
 class RvtMcpSnapshot:
     instance_pid: int
-    active_view_id: str
 
     @classmethod
-    def from_tool_results(cls, target: dict, current_view: dict) -> "RvtMcpSnapshot":
+    def from_discovery_target(cls, target: dict) -> "RvtMcpSnapshot":
         try:
             instance_pid = int(target["pid"])
-            active_view_id = str(current_view["viewId"])
         except (KeyError, TypeError, ValueError) as error:
-            raise ValueError("rvt-mcp target and current view results are incomplete") from error
-        return cls(instance_pid=instance_pid, active_view_id=active_view_id)
+            raise ValueError("rvt-mcp discovery target is incomplete") from error
+        return cls(instance_pid=instance_pid)
 
 
 class DocumentBindingSession:
@@ -112,8 +110,6 @@ class DocumentBindingSession:
     ) -> Optional[str]:
         if snapshot.instance_id != f"revit-{rvt_mcp_snapshot.instance_pid}":
             return "rvt_mcp_instance_mismatch"
-        if snapshot.active_view_id != rvt_mcp_snapshot.active_view_id:
-            return "rvt_mcp_view_mismatch"
         return None
 
     def _status(self, snapshot: DocumentSnapshot, binding_status: str, pause_reason: Optional[str]) -> dict:

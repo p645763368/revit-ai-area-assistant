@@ -28,8 +28,8 @@ def snapshot(
     )
 
 
-def rvt_mcp_snapshot(instance_pid=4312, active_view_id="2178223"):
-    return RvtMcpSnapshot(instance_pid=instance_pid, active_view_id=active_view_id)
+def rvt_mcp_snapshot(instance_pid=4312):
+    return RvtMcpSnapshot(instance_pid=instance_pid)
 
 
 class DocumentBindingSessionTests(unittest.TestCase):
@@ -55,16 +55,6 @@ class DocumentBindingSessionTests(unittest.TestCase):
         self.assertEqual(status["binding_status"], "paused")
         self.assertEqual(status["rvt_mcp_status"], "mismatch")
         self.assertEqual(status["pause_reason"], "rvt_mcp_instance_mismatch")
-        self.assertIs(status["write_allowed"], False)
-
-    def test_stale_rvt_mcp_view_pauses_binding_and_denies_writes(self):
-        session = DocumentBindingSession(AUTHORIZED_COPY)
-
-        status = session.bind(snapshot(), rvt_mcp_snapshot(active_view_id="88"))
-
-        self.assertEqual(status["binding_status"], "paused")
-        self.assertEqual(status["rvt_mcp_status"], "mismatch")
-        self.assertEqual(status["pause_reason"], "rvt_mcp_view_mismatch")
         self.assertIs(status["write_allowed"], False)
 
     def test_switching_documents_pauses_the_bound_task_and_revokes_write_permission(self):
@@ -118,14 +108,12 @@ class DocumentBindingSessionTests(unittest.TestCase):
 
         self.assertIs(status["write_allowed"], False)
 
-    def test_rvt_mcp_snapshot_accepts_discovery_and_current_view_results(self):
-        evidence = RvtMcpSnapshot.from_tool_results(
+    def test_rvt_mcp_snapshot_accepts_discovery_target(self):
+        evidence = RvtMcpSnapshot.from_discovery_target(
             target={"year": "2026", "pid": 4312},
-            current_view={"viewId": 2178223, "viewName": "GFA Review"},
         )
 
         self.assertEqual(evidence.instance_pid, 4312)
-        self.assertEqual(evidence.active_view_id, "2178223")
 
 
 if __name__ == "__main__":

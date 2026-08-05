@@ -140,11 +140,11 @@ rvt-mcp v0.5的Revit插件一次只能让一个服务连接。Codex正在连接R
 | `Revit instance` | 以`revit-`开头 | 已识别当前Revit进程 |
 | `Document title` | 当前测试副本标题 | 没有读到其他文件 |
 | `Document path` | 当前测试副本的完整路径 | 不是空白，也不是原模型 |
-| `Active view` | 与当前Revit视图名称一致 | pyRevit与rvt-mcp观察的是同一视图 |
+| `Active view` | 与当前Revit视图名称一致 | pyRevit读取了当前活动视图 |
 | `IsModified` | `True`或`False`均可 | 记录下来，后面要再次比较 |
 | `Authorized path match` | `yes` | 当前文件与环境变量中的测试副本完全一致 |
 | `Agent/rvt-mcp binding` | `bound` | Agent已经绑定当前实例和文档 |
-| `rvt-mcp status` | `verified` | rvt-mcp进程和活动视图验证通过 |
+| `rvt-mcp status` | `verified` | rvt-mcp发现的唯一Revit进程与pyRevit当前进程一致 |
 | `Write permission` | `allowed` | 安全条件全部通过；本Issue仍不会真的写入 |
 | `Pause reason` | `none` | 当前没有触发暂停 |
 

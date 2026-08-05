@@ -45,7 +45,7 @@ class DocumentStatusContractTests(unittest.TestCase):
             request_id="req-42",
             session=session,
             document_snapshot=snapshot,
-            rvt_mcp_snapshot=RvtMcpSnapshot(instance_pid=4312, active_view_id="12345"),
+            rvt_mcp_snapshot=RvtMcpSnapshot(instance_pid=4312),
         )
 
         Draft202012Validator(schema).validate(response)
@@ -65,7 +65,7 @@ class DocumentStatusContractTests(unittest.TestCase):
             "req-1",
             session,
             initial,
-            RvtMcpSnapshot(instance_pid=4312, active_view_id="12345"),
+            RvtMcpSnapshot(instance_pid=4312),
         )
         switched = DocumentSnapshot(
             instance_id="revit-4312",
@@ -81,7 +81,7 @@ class DocumentStatusContractTests(unittest.TestCase):
             "req-2",
             session,
             switched,
-            RvtMcpSnapshot(instance_pid=4312, active_view_id="88"),
+            RvtMcpSnapshot(instance_pid=4312),
         )
 
         self.assertEqual(response["payload"]["binding_status"], "paused")

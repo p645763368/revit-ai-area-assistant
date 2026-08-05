@@ -14,10 +14,6 @@ class FakeMcpClient:
                 "count": 1,
                 "targets": [{"year": "2026", "pid": 4312}],
             }
-        if name == "revit_switch_target":
-            return {"ok": True, "newTarget": "2026", "verified": True}
-        if name == "revit_get_current_view_info":
-            return {"viewId": 2178223, "viewName": "GFA Review"}
         raise AssertionError("unexpected tool: " + name)
 
 
@@ -28,15 +24,7 @@ class RvtMcpGatewayTests(unittest.TestCase):
         evidence = read_current_revit_evidence(client)
 
         self.assertEqual(evidence.instance_pid, 4312)
-        self.assertEqual(evidence.active_view_id, "2178223")
-        self.assertEqual(
-            client.calls,
-            [
-                ("revit_list_available_targets", {}),
-                ("revit_switch_target", {"version": "2026", "verify": True}),
-                ("revit_get_current_view_info", {}),
-            ],
-        )
+        self.assertEqual(client.calls, [("revit_list_available_targets", {})])
 
     def test_agent_refuses_ambiguous_multiple_revit_targets(self):
         class MultipleTargetsClient(FakeMcpClient):

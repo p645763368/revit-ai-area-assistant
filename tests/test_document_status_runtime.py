@@ -7,10 +7,6 @@ class FakeMcpClient:
     def call_tool(self, name, arguments):
         if name == "revit_list_available_targets":
             return {"count": 1, "targets": [{"year": "2026", "pid": 4312}]}
-        if name == "revit_switch_target":
-            return {"ok": True, "verified": True}
-        if name == "revit_get_current_view_info":
-            return {"viewId": 12345, "viewName": "GFA Review"}
         raise AssertionError("unexpected tool: " + name)
 
 
