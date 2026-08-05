@@ -4,6 +4,7 @@ import threading
 import time
 from contextlib import redirect_stderr
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import unittest
 
@@ -119,6 +120,28 @@ class AgentChatApiTests(unittest.TestCase):
                 },
             },
         )
+
+    def test_chat_rejects_payloads_that_do_not_match_the_feature_contract(self):
+        invalid_payload = {
+            "contract_version": "1.0",
+            "message_type": "request",
+            "request_id": "req-invalid",
+            "action": "chat.stream",
+            "payload": {"message": "hello", "unexpected": True},
+        }
+        request = Request(
+            "http://127.0.0.1:{}/v1/chat".format(self.agent_server.server_port),
+            data=json.dumps(invalid_payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(request, timeout=1)
+        error = json.loads(raised.exception.read().decode("utf-8"))
+
+        self.assertEqual(raised.exception.code, 400)
+        self.assertEqual(error["code"], "invalid_request")
 
     def test_model_failure_is_retryable_and_does_not_expose_authorization(self):
         self._restart_agent("failure", timeout_seconds=1)

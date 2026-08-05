@@ -57,13 +57,17 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             request = json.loads(self.rfile.read(length).decode("utf-8"))
             request_id = request.get("request_id")
+            payload = request.get("payload")
             if (
-                request.get("contract_version") != CONTRACT_VERSION
+                set(request) != {"contract_version", "message_type", "request_id", "action", "payload"}
+                or request.get("contract_version") != CONTRACT_VERSION
                 or request.get("message_type") != "request"
                 or request.get("action") != "chat.stream"
                 or not request_id
-                or not isinstance(request.get("payload", {}).get("message"), str)
-                or not request["payload"]["message"].strip()
+                or not isinstance(payload, dict)
+                or set(payload) != {"message"}
+                or not isinstance(payload.get("message"), str)
+                or not payload["message"].strip()
             ):
                 raise ValueError("invalid request")
         except (UnicodeDecodeError, ValueError, TypeError, json.JSONDecodeError):

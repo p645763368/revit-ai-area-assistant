@@ -6,6 +6,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+from area_assistant_pyrevit import PANEL_ID
 from scripts.check_repository_safety import violations
 
 
@@ -23,7 +24,7 @@ class RepositoryBaselineTests(unittest.TestCase):
         with patch.dict(sys.modules, {"pyrevit": fake_pyrevit}):
             runpy.run_path(str(script))
 
-        self.assertEqual(opened_panels, ["16f1e56c-b758-4a1c-bb5d-2af725692ede"])
+        self.assertEqual(opened_panels, [PANEL_ID])
 
     def test_pyrevit_dockable_panel_uses_the_supported_ironpython_forms_backend(self):
         startup = ROOT / "pyrevit" / "AI Area Assistant.extension" / "startup.py"
