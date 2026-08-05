@@ -105,8 +105,11 @@ class SessionPersistenceTests(unittest.TestCase):
                     "Authorization": "Bearer top-secret",
                     "nested": {
                         "api_key": "fake-key",
+                        "completion_tokens": 80,
                         "level_id": 42,
+                        "passwordless_enabled": True,
                         "session_token": "token-value",
+                        "token_count": 120,
                     },
                 },
                 error=(
@@ -126,6 +129,11 @@ class SessionPersistenceTests(unittest.TestCase):
                     event["inputs"]["nested"]["session_token"], "[REDACTED]"
                 )
                 self.assertEqual(event["inputs"]["nested"]["level_id"], 42)
+                self.assertEqual(event["inputs"]["nested"]["token_count"], 120)
+                self.assertEqual(
+                    event["inputs"]["nested"]["completion_tokens"], 80
+                )
+                self.assertTrue(event["inputs"]["nested"]["passwordless_enabled"])
                 self.assertNotIn("top-secret", text)
                 self.assertNotIn("fake-key", text)
                 self.assertNotIn("err-secret", text)

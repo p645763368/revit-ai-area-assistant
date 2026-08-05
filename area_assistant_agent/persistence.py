@@ -17,10 +17,24 @@ REDACTED = "[REDACTED]"
 
 
 def _is_sensitive_key(key: str) -> bool:
-    normalized = "".join(character for character in key.lower() if character.isalnum())
-    return any(
-        marker in normalized
-        for marker in ("authorization", "apikey", "token", "secret", "password")
+    normalized = re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
+    collapsed = normalized.replace("_", "")
+    return (
+        collapsed
+        in {
+            "authorization",
+            "apikey",
+            "accesstoken",
+            "refreshtoken",
+            "sessiontoken",
+            "idtoken",
+            "token",
+            "clientsecret",
+            "secret",
+            "secretkey",
+            "password",
+        }
+        or normalized.endswith(("_api_key", "_token", "_secret", "_password"))
     )
 
 
