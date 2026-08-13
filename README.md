@@ -6,6 +6,7 @@
 
 - [非专业开发人员双人Codex协同开发指南](docs/非专业开发人员双人Codex协同开发指南.md)
 - [Issue #5 外部状态、日志与会话恢复人工测试手册](docs/Issue-5-外部状态日志与会话恢复-人工测试手册.md)
+- [Issue #5 人工测试记录（2026-08-13）](docs/Issue-5-人工测试记录-2026-08-13.md)
 - [产品与技术规格 Issue #1](https://github.com/p645763368/revit-ai-area-assistant/issues/1)
 - [全部开发任务](https://github.com/p645763368/revit-ai-area-assistant/issues)
 
