@@ -1,5 +1,6 @@
 import importlib
 import sys
+import threading
 import types
 import unittest
 from unittest.mock import patch
@@ -96,6 +97,41 @@ class _ObservingRevokeClient:
         return {"revoked": True}
 
 
+class _BlockingRevokeClient:
+    def __init__(self):
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def revoke_session(self, panel_instance_id, generation, context_id):
+        self.started.set()
+        self.release.wait(2)
+        return {"revoked": True}
+
+
+class _SwitchBetweenChecksEvent(dict):
+    def __init__(self, panel):
+        dict.__init__(
+            self,
+            message_type="response",
+            status="completed",
+            payload={"message": "stale reply"},
+        )
+        self.panel = panel
+        self.payload_reads = 0
+
+    def get(self, key, default=None):
+        if key == "payload":
+            self.payload_reads += 1
+            if self.payload_reads == 2:
+                self.panel._pause_session_for_document_change()
+        return dict.get(self, key, default)
+
+
+class _CheckThenSwitchClient(_SwitchingClient):
+    def stream_chat(self, message):
+        yield _SwitchBetweenChecksEvent(self.panel)
+
+
 def _load_panel_module():
     fake_ui = types.ModuleType("Autodesk.Revit.UI")
     fake_ui.DockablePaneState = type("DockablePaneState", (), {})
@@ -168,6 +204,7 @@ class PyRevitPanelTests(unittest.TestCase):
         panel._document_request_version = 2
         panel._document_pause_reason = None
         panel._run_background = lambda callback: callback()
+        panel._dispatch = lambda callback: callback()
         panel._bound_document_fingerprint = None
         panel._session_document_fingerprint = "fingerprint-1"
         panel._session_id = "session-a"
@@ -272,6 +309,8 @@ class PyRevitPanelTests(unittest.TestCase):
 
         self.assertEqual(panel._session_id, "session-a")
         self.assertTrue(panel.SendButton.IsEnabled)
+        self.assertFalse(panel.NewSessionButton.IsEnabled)
+        panel.new_session_click(None, None)
         self.assertEqual(
             panel._client.calls,
             [("choose", "document-a", "continue", "session-a")],
@@ -295,6 +334,7 @@ class PyRevitPanelTests(unittest.TestCase):
         panel._data_root = "C:\\a\\AI_Area_Assistant_Data"
         panel._document_pause_reason = None
         panel._run_background = lambda callback: callback()
+        panel._dispatch = lambda callback: callback()
         panel.SendButton = _Control()
         panel.SendButton.IsEnabled = True
         panel.ContinueSessionButton = _Control()
@@ -324,6 +364,58 @@ class PyRevitPanelTests(unittest.TestCase):
             [("revoke", "panel-a", 8, "context-a")],
         )
 
+    def test_view_switch_returns_before_revoke_and_verifies_after_barrier(self):
+        panel_module = _load_panel_module()
+        panel = panel_module.AiAreaAssistantPanel.__new__(
+            panel_module.AiAreaAssistantPanel
+        )
+        panel._bound_document_fingerprint = "document-a"
+        panel._session_document_fingerprint = "document-a"
+        panel._session_project_directory = "C:\\a"
+        panel._session_request_version = 7
+        panel._panel_instance_id = "panel-a"
+        panel._session_id = "session-a"
+        panel._session_context_id = "context-a"
+        panel._pending_session_id = None
+        panel._data_root = None
+        panel._document_pause_reason = None
+        panel.SendButton = _Control()
+        panel.SendButton.IsEnabled = True
+        panel.ContinueSessionButton = _Control()
+        panel.NewSessionButton = _Control()
+        panel.SessionState = _Control()
+        panel._client = _BlockingRevokeClient()
+        threads = []
+
+        def run_background(callback):
+            thread = threading.Thread(target=callback)
+            thread.start()
+            threads.append(thread)
+
+        panel._run_background = run_background
+        panel._dispatch = lambda callback: callback()
+        snapshot_b = {
+            "document_fingerprint": "document-b",
+            "document_path": "C:\\b\\model.rvt",
+        }
+        panel_module.collect_document_status = lambda document, path: snapshot_b
+        observed = []
+        panel._start_document_snapshot_verification = observed.append
+        event_args = types.SimpleNamespace(
+            CurrentActiveView=types.SimpleNamespace(Document=object())
+        )
+
+        panel._on_view_activated(None, event_args)
+
+        self.assertTrue(panel._client.started.wait(1))
+        self.assertEqual(observed, [])
+        self.assertIsNone(panel._session_id)
+        self.assertFalse(panel.SendButton.IsEnabled)
+        panel._client.release.set()
+        threads[0].join(2)
+        self.assertFalse(threads[0].is_alive())
+        self.assertEqual(observed, [snapshot_b])
+
     def test_document_switch_invalidates_local_session_before_agent_revoke_returns(self):
         panel_module = _load_panel_module()
         panel = panel_module.AiAreaAssistantPanel.__new__(
@@ -343,18 +435,12 @@ class PyRevitPanelTests(unittest.TestCase):
         panel.NewSessionButton = _Control()
         panel.SessionState = _Control()
         panel._client = _ObservingRevokeClient(panel)
-        callbacks = []
-        panel._run_background = callbacks.append
-
         panel._pause_session_for_document_change()
 
-        self.assertIsNone(panel._client.observed)
         self.assertIsNone(panel._session_id)
         self.assertIsNone(panel._session_context_id)
         self.assertFalse(panel.SendButton.IsEnabled)
         self.assertEqual(panel._session_request_version, 4)
-        self.assertEqual(len(callbacks), 1)
-        callbacks[0]()
         self.assertEqual(panel._client.observed, (None, None, False, 4))
 
     def test_late_reply_cannot_write_after_document_switch(self):
@@ -392,6 +478,41 @@ class PyRevitPanelTests(unittest.TestCase):
             ],
         )
         self.assertNotIn("stale reply", panel.Transcript.Text)
+
+    def test_switch_after_completed_check_still_skips_assistant_record(self):
+        panel_module = _load_panel_module()
+        panel = panel_module.AiAreaAssistantPanel.__new__(
+            panel_module.AiAreaAssistantPanel
+        )
+        panel._dispatch = lambda callback: callback()
+        panel._session_request_version = 1
+        panel._panel_instance_id = "panel-a"
+        panel._session_project_directory = "C:\\a"
+        panel._session_document_fingerprint = "document-a"
+        panel._session_id = "session-a"
+        panel._session_context_id = "context-a"
+        panel._pending_session_id = None
+        panel._data_root = None
+        panel.SendButton = _Control()
+        panel.ContinueSessionButton = _Control()
+        panel.NewSessionButton = _Control()
+        panel.SessionState = _Control()
+        panel.Transcript = _Control()
+        panel.ConnectionState = _Control()
+        panel.ConnectionDetail = _Control()
+        panel.RetryButton = _Control()
+        panel._client = _CheckThenSwitchClient(panel)
+        context = panel._session_context()
+
+        panel._stream("message for A", context)
+
+        self.assertEqual(
+            panel._client.records,
+            [
+                ("document-a", "session-a", "user", "message for A"),
+                ("revoked", "context-a", 2),
+            ],
+        )
 
     def test_stale_document_verification_cannot_overwrite_newer_result(self):
         panel_module = _load_panel_module()

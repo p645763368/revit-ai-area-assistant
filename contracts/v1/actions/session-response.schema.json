@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://revit-ai-area-assistant.local/contracts/v1/actions/session-response.schema.json",
+  "title": "External session response",
+  "allOf": [
+    {"$ref": "../response.schema.json"},
+    {
+      "properties": {"status": {"const": "completed"}},
+      "oneOf": [
+        {
+          "properties": {
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["active_session_id", "context_id", "data_root", "requires_user_choice", "sessions"],
+              "properties": {
+                "active_session_id": {"type": "null"},
+                "context_id": {"type": "string", "minLength": 1},
+                "data_root": {"type": "string", "minLength": 1},
+                "requires_user_choice": {"const": true},
+                "sessions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["session_id", "status", "updated_at"],
+                    "properties": {
+                      "session_id": {"type": "string", "minLength": 1},
+                      "status": {"enum": ["idle", "awaiting_user_action"]},
+                      "updated_at": {"type": "string", "minLength": 1}
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["active_session_id", "context_id", "data_root", "status"],
+              "properties": {
+                "active_session_id": {"type": "string", "minLength": 1},
+                "context_id": {"type": "string", "minLength": 1},
+                "data_root": {"type": "string", "minLength": 1},
+                "status": {"enum": ["idle", "awaiting_user_action"]}
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["recorded", "session_id"],
+              "properties": {
+                "recorded": {"const": true},
+                "session_id": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["revoked"],
+              "properties": {"revoked": {"const": true}}
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -22,6 +22,61 @@ class AgentConnectionError(Exception):
     pass
 
 
+def _nonempty_string(value):
+    return isinstance(value, STRING_TYPES) and bool(value)
+
+
+def _valid_session_payload(action, payload):
+    if not isinstance(payload, dict):
+        return False
+    if action == "session.open":
+        sessions = payload.get("sessions")
+        if (
+            set(payload)
+            != {
+                "active_session_id",
+                "context_id",
+                "data_root",
+                "requires_user_choice",
+                "sessions",
+            }
+            or payload.get("active_session_id") is not None
+            or not _nonempty_string(payload.get("context_id"))
+            or not _nonempty_string(payload.get("data_root"))
+            or payload.get("requires_user_choice") is not True
+            or not isinstance(sessions, list)
+        ):
+            return False
+        for item in sessions:
+            if (
+                not isinstance(item, dict)
+                or set(item) != {"session_id", "status", "updated_at"}
+                or not _nonempty_string(item.get("session_id"))
+                or item.get("status") not in ("idle", "awaiting_user_action")
+                or not _nonempty_string(item.get("updated_at"))
+            ):
+                return False
+        return True
+    if action == "session.choose":
+        return (
+            set(payload)
+            == {"active_session_id", "context_id", "data_root", "status"}
+            and _nonempty_string(payload.get("active_session_id"))
+            and _nonempty_string(payload.get("context_id"))
+            and _nonempty_string(payload.get("data_root"))
+            and payload.get("status") in ("idle", "awaiting_user_action")
+        )
+    if action == "session.message":
+        return (
+            set(payload) == {"recorded", "session_id"}
+            and payload.get("recorded") is True
+            and _nonempty_string(payload.get("session_id"))
+        )
+    if action == "session.revoke":
+        return set(payload) == {"revoked"} and payload.get("revoked") is True
+    return False
+
+
 class AgentClient:
     def __init__(self, base_url="http://127.0.0.1:8765", timeout_seconds=2):
         self.base_url = base_url.rstrip("/")
@@ -265,11 +320,20 @@ class AgentClient:
             finally:
                 response.close()
             if (
-                envelope.get("contract_version") != CONTRACT_VERSION
+                not isinstance(envelope, dict)
+                or set(envelope)
+                != {
+                    "contract_version",
+                    "message_type",
+                    "request_id",
+                    "status",
+                    "payload",
+                }
+                or envelope.get("contract_version") != CONTRACT_VERSION
                 or envelope.get("message_type") != "response"
                 or envelope.get("request_id") != request_id
                 or envelope.get("status") != "completed"
-                or not isinstance(envelope.get("payload"), dict)
+                or not _valid_session_payload(action, envelope.get("payload"))
             ):
                 raise AgentConnectionError(
                     "Session request returned an incompatible v1 response."

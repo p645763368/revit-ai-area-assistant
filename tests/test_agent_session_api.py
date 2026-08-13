@@ -166,6 +166,76 @@ class AgentSessionApiTests(unittest.TestCase):
             )
             self.assertEqual(conversation_paths, [])
 
+    def test_revoke_fence_rejects_checked_late_write_without_touching_jsonl(self):
+        with tempfile.TemporaryDirectory() as project_directory:
+            opened = self._open_session(project_directory, "document-a")
+            chosen = self._post(
+                "/v1/sessions/choose",
+                {
+                    "choice": "new",
+                    "context_id": opened["context_id"],
+                    "document_fingerprint": "document-a",
+                    "generation": self.generation,
+                    "panel_instance_id": self.panel_id,
+                    "project_directory": project_directory,
+                    "session_id": None,
+                },
+            )
+            message = {
+                "content": "initial message",
+                "context_id": chosen["context_id"],
+                "document_fingerprint": "document-a",
+                "generation": self.generation,
+                "panel_instance_id": self.panel_id,
+                "project_directory": project_directory,
+                "role": "user",
+                "session_id": chosen["active_session_id"],
+            }
+            self._post("/v1/sessions/messages", message)
+            conversation_path = next(
+                Path(project_directory).glob(
+                    "AI_Area_Assistant_Data/documents/*/sessions/{}/conversation.jsonl".format(
+                        chosen["active_session_id"]
+                    )
+                )
+            )
+            before_content = conversation_path.read_bytes()
+            before_mtime = conversation_path.stat().st_mtime_ns
+            local_check_passed = threading.Event()
+            allow_late_request = threading.Event()
+            results = []
+
+            def send_checked_late_reply():
+                local_check_passed.set()
+                allow_late_request.wait(2)
+                late_message = dict(message)
+                late_message.update(
+                    {"content": "late assistant reply", "role": "assistant"}
+                )
+                try:
+                    self._post("/v1/sessions/messages", late_message)
+                except HTTPError as error:
+                    results.append(error.code)
+
+            writer = threading.Thread(target=send_checked_late_reply)
+            writer.start()
+            self.assertTrue(local_check_passed.wait(1))
+            self._post(
+                "/v1/sessions/revoke",
+                {
+                    "context_id": chosen["context_id"],
+                    "generation": 2,
+                    "panel_instance_id": self.panel_id,
+                },
+            )
+            allow_late_request.set()
+            writer.join(2)
+
+            self.assertFalse(writer.is_alive())
+            self.assertEqual(results, [400])
+            self.assertEqual(conversation_path.read_bytes(), before_content)
+            self.assertEqual(conversation_path.stat().st_mtime_ns, before_mtime)
+
     def _open_session(self, project_directory, document_fingerprint):
         return self._post(
             "/v1/sessions/open",

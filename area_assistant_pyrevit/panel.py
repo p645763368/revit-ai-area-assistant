@@ -91,7 +91,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             self._choose_session("continue", self._pending_session_id)
 
     def new_session_click(self, sender, args):
-        if self._session_document_fingerprint:
+        if self.NewSessionButton.IsEnabled and self._session_document_fingerprint:
             self._choose_session("new", None)
 
     def retry_click(self, sender, args):
@@ -178,7 +178,10 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             and snapshot["document_fingerprint"]
             != self._session_document_fingerprint
         ):
-            self._pause_session_for_document_change()
+            self._pause_session_for_document_change(
+                lambda: self._start_document_snapshot_verification(snapshot)
+            )
+            return
         self._start_document_snapshot_verification(snapshot)
 
     def _subscribe_document_changes(self):
@@ -253,6 +256,8 @@ class AiAreaAssistantPanel(forms.WPFPanel):
                         assistant_message = event.get("payload", {}).get(
                             "message", "".join(complete)
                         )
+                        if not self._session_is_current(context):
+                            return
                         self._client.record_message(
                             context[1],
                             context[2],
@@ -437,12 +442,12 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._data_root = result.get("data_root") or self._data_root
         self._pending_session_id = None
         self.ContinueSessionButton.IsEnabled = False
-        self.NewSessionButton.IsEnabled = True
+        self.NewSessionButton.IsEnabled = False
         self._set_session_status(self._session_detail(detail))
         self._set_busy(False)
         self._set_status("已连接", "当前文档会话已就绪")
 
-    def _pause_session_for_document_change(self):
+    def _pause_session_for_document_change(self, after_revoke=None):
         next_version = self._session_request_version + 1
         context_id = self._session_context_id
         self._session_request_version = next_version
@@ -457,9 +462,26 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self.NewSessionButton.IsEnabled = False
         self._set_session_status("文档已切换；旧会话已暂停，正在读取新文档")
         if context_id is not None:
-            self._run_background(
-                lambda: self._revoke_session(next_version, context_id)
-            )
+            if after_revoke is None:
+                self._revoke_session(next_version, context_id)
+            else:
+                self._run_background(
+                    lambda: self._revoke_then_continue(
+                        next_version, context_id, after_revoke
+                    )
+                )
+        elif after_revoke is not None:
+            after_revoke()
+
+    def _revoke_then_continue(self, generation, context_id, callback):
+        self._revoke_session(generation, context_id)
+        self._dispatch(
+            lambda: self._continue_after_revoke(generation, callback)
+        )
+
+    def _continue_after_revoke(self, generation, callback):
+        if generation == self._session_request_version:
+            callback()
 
     def _revoke_session(self, generation, context_id):
         try:

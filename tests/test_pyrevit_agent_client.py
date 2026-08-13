@@ -58,6 +58,11 @@ class _FakeAgentHandler(BaseHTTPRequestHandler):
                 payload = {"revoked": True}
             else:
                 payload = {"recorded": True, "session_id": "session-a"}
+            payload.update(
+                getattr(self.server, "session_response_overrides", {}).get(
+                    self.path, {}
+                )
+            )
             body = json.dumps(
                 {
                     "contract_version": "1.0",
@@ -216,6 +221,56 @@ class PyRevitAgentClientTests(unittest.TestCase):
         for _, request in self.server.requests:
             self.assertEqual(request["contract_version"], "1.0")
             self.assertEqual(request["message_type"], "request")
+
+    def test_panel_client_rejects_malformed_session_action_payloads(self):
+        cases = (
+            (
+                "/v1/sessions/open",
+                {"sessions": "not-a-list"},
+                lambda: self.client.open_session(
+                    "C:\\test", "document-a", "panel-a", 1
+                ),
+            ),
+            (
+                "/v1/sessions/choose",
+                {"active_session_id": None},
+                lambda: self.client.choose_session(
+                    "C:\\test",
+                    "document-a",
+                    "context-a",
+                    "panel-a",
+                    1,
+                    "continue",
+                    "session-a",
+                ),
+            ),
+            (
+                "/v1/sessions/messages",
+                {"recorded": False},
+                lambda: self.client.record_message(
+                    "C:\\test",
+                    "document-a",
+                    "context-a",
+                    "panel-a",
+                    1,
+                    "session-a",
+                    "user",
+                    "hello",
+                ),
+            ),
+            (
+                "/v1/sessions/revoke",
+                {"revoked": False},
+                lambda: self.client.revoke_session("panel-a", 2, "context-a"),
+            ),
+        )
+        for path, override, request in cases:
+            with self.subTest(path=path):
+                self.server.session_response_overrides = {path: override}
+                with self.assertRaisesRegex(
+                    Exception, "incompatible v1 response"
+                ):
+                    request()
 
     def test_panel_client_sends_document_snapshot_through_versioned_contract(self):
         snapshot = {
