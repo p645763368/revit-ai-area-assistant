@@ -96,6 +96,18 @@ Agent会优先使用`AI_AREA_ASSISTANT_RVT_MCP_COMMAND`指定的rvt-mcp服务命
 
 Revit 2026人工验收步骤见[`docs/issue-4-revit-manual-test.md`](docs/issue-4-revit-manual-test.md)。
 
+## 边界来源选择与定位
+
+Issue #6在Dockable Pane中增加“边界来源选择”卡片：
+
+- “读取当前选择”读取Revit中已经选中的元素，并只保留Floor、Roof和Wall。
+- “交互式选择”进入Revit多选模式；按`Esc`安全取消并保留上一次有效选择。
+- 面板显示Element ID、UniqueId、类别、关联楼层、类型和包围盒尺寸摘要。
+- “定位高亮”仅更新Revit当前UI选择集并缩放定位，不启动Transaction、不创建永久模型成果。
+- “交给Agent分析”通过既有`chat.stream`文本消息发送摘要，不修改共享v1契约，也不执行模型写入。
+
+切换活动文档会清空缓存的来源元素，避免把旧文档Element ID用于新文档。Revit 2026人工验收步骤见[`docs/issue-6-revit-manual-test.md`](docs/issue-6-revit-manual-test.md)。
+
 ## 共享契约
 
 公共契约说明见[`contracts/README.md`](contracts/README.md)。后续并行任务必须复用`contracts/v1`信封；任何不兼容变化都需要新主版本并在PR中说明影响。
