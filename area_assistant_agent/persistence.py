@@ -40,9 +40,9 @@ def _is_sensitive_key(key: str) -> bool:
 
 def _redact_text(value: str) -> str:
     value = re.sub(
-        r"(?i)\b(authorization|api[-_ ]?key|token|secret|password)"
-        r"\s*[:=]\s*(?:(?:Bearer|Basic)\s+)?[^\s,;]+",
-        lambda match: match.group(1) + "=" + REDACTED,
+        r'(?i)(["\']?)(authorization|api[-_ ]?key|token|secret|password)\1'
+        r'\s*[:=]\s*(["\']?)(?:(?:Bearer|Basic)\s+)?[^\s,;"\'}]+\3',
+        lambda match: match.group(2) + "=" + REDACTED,
         value,
     )
     value = re.sub(r"(?i)\bBearer\s+[^\s,;]+", REDACTED, value)

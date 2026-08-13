@@ -114,7 +114,8 @@ class SessionPersistenceTests(unittest.TestCase):
                 },
                 error=(
                     "request failed: Authorization: Bearer err-secret; "
-                    "api_key=error-api-secret password=hunter2 token=plain-token"
+                    "api_key=error-api-secret password=hunter2 token=plain-token; "
+                    'JSON payload: {"api_key": "quoted-json-secret"}'
                 ),
             )
 
@@ -140,6 +141,7 @@ class SessionPersistenceTests(unittest.TestCase):
                 self.assertNotIn("error-api-secret", text)
                 self.assertNotIn("hunter2", text)
                 self.assertNotIn("plain-token", text)
+                self.assertNotIn("quoted-json-secret", text)
             markdown = session.markdown_path.read_text(encoding="utf-8")
             self.assertNotIn("top-secret", markdown)
             self.assertNotIn("fake-key", markdown)
@@ -147,6 +149,7 @@ class SessionPersistenceTests(unittest.TestCase):
             self.assertNotIn("error-api-secret", markdown)
             self.assertNotIn("hunter2", markdown)
             self.assertNotIn("plain-token", markdown)
+            self.assertNotIn("quoted-json-secret", markdown)
 
     def test_successful_tool_io_is_human_readable_in_markdown(self):
         with tempfile.TemporaryDirectory() as project_directory:
