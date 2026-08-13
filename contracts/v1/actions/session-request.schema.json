@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://revit-ai-area-assistant.local/contracts/v1/actions/session-request.schema.json",
+  "title": "External session request",
+  "allOf": [
+    {"$ref": "../request.schema.json"},
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "action": {"const": "session.open"},
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["document_fingerprint", "generation", "panel_instance_id", "project_directory"],
+              "properties": {
+                "document_fingerprint": {"type": "string", "minLength": 1},
+                "generation": {"type": "integer", "minimum": 0},
+                "panel_instance_id": {"type": "string", "minLength": 1},
+                "project_directory": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "action": {"const": "session.choose"},
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["choice", "context_id", "document_fingerprint", "generation", "panel_instance_id", "project_directory", "session_id"],
+              "properties": {
+                "choice": {"enum": ["continue", "new"]},
+                "context_id": {"type": "string", "minLength": 1},
+                "document_fingerprint": {"type": "string", "minLength": 1},
+                "generation": {"type": "integer", "minimum": 0},
+                "panel_instance_id": {"type": "string", "minLength": 1},
+                "project_directory": {"type": "string", "minLength": 1},
+                "session_id": {"type": ["string", "null"]}
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "action": {"const": "session.message"},
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["content", "context_id", "document_fingerprint", "generation", "panel_instance_id", "project_directory", "role", "session_id"],
+              "properties": {
+                "content": {"type": "string"},
+                "context_id": {"type": "string", "minLength": 1},
+                "document_fingerprint": {"type": "string", "minLength": 1},
+                "generation": {"type": "integer", "minimum": 0},
+                "panel_instance_id": {"type": "string", "minLength": 1},
+                "project_directory": {"type": "string", "minLength": 1},
+                "role": {"enum": ["user", "assistant"]},
+                "session_id": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "action": {"const": "session.revoke"},
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["context_id", "generation", "panel_instance_id"],
+              "properties": {
+                "context_id": {"type": "string", "minLength": 1},
+                "generation": {"type": "integer", "minimum": 0},
+                "panel_instance_id": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

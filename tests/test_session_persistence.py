@@ -36,6 +36,21 @@ class SessionPersistenceTests(unittest.TestCase):
                 [session_a.session_id],
             )
 
+    def test_corrupted_state_does_not_hide_other_recovery_candidates(self):
+        with tempfile.TemporaryDirectory() as project_directory:
+            repository = SessionRepository(Path(project_directory))
+            healthy = repository.create_session("document-fingerprint-a")
+            corrupted = repository.create_session("document-fingerprint-a")
+            corrupted.state_path.write_text("{interrupted", encoding="utf-8")
+
+            prompt = repository.recovery_prompt("document-fingerprint-a")
+
+            self.assertTrue(prompt.requires_user_choice)
+            self.assertEqual(
+                [candidate.session_id for candidate in prompt.sessions],
+                [healthy.session_id],
+            )
+
     def test_explicit_resume_waits_for_a_new_user_action(self):
         with tempfile.TemporaryDirectory() as project_directory:
             repository = SessionRepository(Path(project_directory))

@@ -82,6 +82,23 @@ class SharedContractExamplesTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             Draft202012Validator(response_schema, registry=registry).validate(invalid_delta)
 
+    def test_session_action_examples_use_the_versioned_request_envelope(self):
+        registry = contract_registry()
+        schema = json.loads(
+            (CONTRACTS / "actions" / "session-request.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        Draft202012Validator.check_schema(schema)
+        validator = Draft202012Validator(schema, registry=registry)
+        examples = CONTRACTS / "actions" / "examples"
+        for example_path in examples.glob("session-*-request.json"):
+            with self.subTest(example=example_path.name):
+                example = json.loads(example_path.read_text(encoding="utf-8"))
+                validator.validate(example)
+                self.assertEqual(example["contract_version"], "1.0")
+                self.assertEqual(example["message_type"], "request")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -124,7 +124,7 @@ AI_Area_Assistant_Data/
     └── session.md
 ```
 
-`SessionRepository.recovery_prompt()`只列出当前文档可恢复的会话。面板集成方必须先向用户显示“继续上次会话”或“新建会话”的选择；不得在打开面板时调用`resume_session()`。用户明确选择继续后，恢复状态为`awaiting_user_action`，不会重放旧的模型操作。对话内容以及工具输入、输出和错误写入记录前会递归遮蔽Authorization、API密钥、Token、Secret和Password字段。
+`SessionRepository.recovery_prompt()`只列出当前文档可恢复且状态文件完整的会话；单个损坏的`state.json`会被隔离，不会阻断其他候选。正式Dockable Pane在文档验证后显示“继续上次会话”或“新建会话”，选择前不创建、恢复或写入任何会话。用户明确选择继续后，恢复状态为`awaiting_user_action`，不会重放旧的模型操作。对话内容以及工具输入、输出和错误写入记录前会递归遮蔽Authorization、API密钥、Token、Secret和Password字段。
 
-本Issue只提供本地Agent侧的公开持久化边界；Dockable Pane对这些接口的调用由对应面板Issue集成。本功能不读取、修改或保存RVT，也没有修改`contracts/v1`共享通信契约。
+切换活动文档时，面板会立即撤销旧会话的发送和写入资格，重新读取当前文档指纹并要求用户为当前文档重新选择会话。面板和Agent通过`contracts/v1`版本化请求共同校验会话上下文；旧文档的迟到回复不能写入旧目录。本功能不读取、修改或保存RVT。
 

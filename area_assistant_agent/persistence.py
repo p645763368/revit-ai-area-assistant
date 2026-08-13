@@ -150,16 +150,28 @@ class SessionRepository:
         candidates = []
         if sessions_directory.is_dir():
             for state_path in sessions_directory.glob("*/state.json"):
-                state = json.loads(state_path.read_text(encoding="utf-8"))
-                if state.get("document_fingerprint") != document_fingerprint:
-                    continue
-                candidates.append(
-                    RecoveryCandidate(
-                        session_id=state["session_id"],
-                        status=state["status"],
-                        updated_at=state["updated_at"],
+                try:
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    session_id = str(uuid.UUID(state["session_id"]))
+                    if (
+                        state.get("document_fingerprint") != document_fingerprint
+                        or session_id != state["session_id"]
+                        or state_path.parent.name != session_id
+                        or not isinstance(state["status"], str)
+                        or not isinstance(state["updated_at"], str)
+                    ):
+                        continue
+                    candidates.append(
+                        RecoveryCandidate(
+                            session_id=session_id,
+                            status=state["status"],
+                            updated_at=state["updated_at"],
+                        )
                     )
-                )
+                except (KeyError, OSError, TypeError, ValueError):
+                    # One interrupted or manually damaged session must not hide
+                    # other recoverable sessions for the same document.
+                    continue
         candidates.sort(key=lambda candidate: candidate.updated_at, reverse=True)
         return RecoveryPrompt(
             requires_user_choice=bool(candidates),

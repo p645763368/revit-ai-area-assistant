@@ -1,0 +1,1 @@
+{"contract_version":"1.0","message_type":"request","request_id":"session-open-1","action":"session.open","payload":{"document_fingerprint":"sha256:anonymous-document","generation":1,"panel_instance_id":"panel-anonymous","project_directory":"D:\\RevitTests"}}

@@ -165,6 +165,123 @@ class AgentClient:
         except (HTTPError, OSError, ValueError, URLError) as exc:
             raise AgentConnectionError("Document verification failed: {}".format(exc))
 
+    def open_session(
+        self,
+        project_directory,
+        document_fingerprint,
+        panel_instance_id,
+        generation,
+    ):
+        return self._post_session_json(
+            "/v1/sessions/open",
+            "session.open",
+            {
+                "document_fingerprint": document_fingerprint,
+                "generation": generation,
+                "panel_instance_id": panel_instance_id,
+                "project_directory": project_directory,
+            },
+        )
+
+    def choose_session(
+        self,
+        project_directory,
+        document_fingerprint,
+        context_id,
+        panel_instance_id,
+        generation,
+        choice,
+        session_id,
+    ):
+        return self._post_session_json(
+            "/v1/sessions/choose",
+            "session.choose",
+            {
+                "choice": choice,
+                "context_id": context_id,
+                "document_fingerprint": document_fingerprint,
+                "generation": generation,
+                "panel_instance_id": panel_instance_id,
+                "project_directory": project_directory,
+                "session_id": session_id,
+            },
+        )
+
+    def record_message(
+        self,
+        project_directory,
+        document_fingerprint,
+        context_id,
+        panel_instance_id,
+        generation,
+        session_id,
+        role,
+        content,
+    ):
+        return self._post_session_json(
+            "/v1/sessions/messages",
+            "session.message",
+            {
+                "content": content,
+                "context_id": context_id,
+                "document_fingerprint": document_fingerprint,
+                "generation": generation,
+                "panel_instance_id": panel_instance_id,
+                "project_directory": project_directory,
+                "role": role,
+                "session_id": session_id,
+            },
+        )
+
+    def revoke_session(self, panel_instance_id, generation, context_id):
+        return self._post_session_json(
+            "/v1/sessions/revoke",
+            "session.revoke",
+            {
+                "context_id": context_id,
+                "generation": generation,
+                "panel_instance_id": panel_instance_id,
+            },
+        )
+
+    def _post_session_json(self, path, action, payload):
+        request_id = "session-{}".format(uuid.uuid4().hex)
+        envelope = {
+            "contract_version": CONTRACT_VERSION,
+            "message_type": "request",
+            "request_id": request_id,
+            "action": action,
+            "payload": payload,
+        }
+        request = Request(
+            self.base_url + path,
+            data=json.dumps(envelope, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            response = urlopen(request, timeout=self.timeout_seconds)
+            try:
+                envelope = json.loads(response.read().decode("utf-8"))
+            finally:
+                response.close()
+            if (
+                envelope.get("contract_version") != CONTRACT_VERSION
+                or envelope.get("message_type") != "response"
+                or envelope.get("request_id") != request_id
+                or envelope.get("status") != "completed"
+                or not isinstance(envelope.get("payload"), dict)
+            ):
+                raise AgentConnectionError(
+                    "Session request returned an incompatible v1 response."
+                )
+            return envelope["payload"]
+        except AgentConnectionError:
+            raise
+        except (HTTPError, OSError, TypeError, ValueError, URLError) as exc:
+            raise AgentConnectionError(
+                "Local Agent session request failed: {}".format(exc)
+            )
+
 
 def ensure_agent_available(client, start_agent, attempts=20, delay_seconds=0.25):
     """Connect to the current singleton or start it and wait for readiness."""

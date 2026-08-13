@@ -30,6 +30,49 @@ class _FakeAgentHandler(BaseHTTPRequestHandler):
         length = int(self.headers["Content-Length"])
         request = json.loads(self.rfile.read(length))
         self.server.request_payload = request
+        self.server.requests.append((self.path, request))
+        if self.path.startswith("/v1/sessions/"):
+            payload_request = request["payload"]
+            if self.path.endswith("/open"):
+                payload = {
+                    "active_session_id": None,
+                    "context_id": "context-a",
+                    "data_root": "C:\\test\\AI_Area_Assistant_Data",
+                    "requires_user_choice": True,
+                    "sessions": [
+                        {
+                            "session_id": "session-a",
+                            "status": "idle",
+                            "updated_at": "2026-08-13T00:00:00+00:00",
+                        }
+                    ],
+                }
+            elif self.path.endswith("/choose"):
+                payload = {
+                    "active_session_id": "session-a",
+                    "context_id": "context-a",
+                    "data_root": "C:\\test\\AI_Area_Assistant_Data",
+                    "status": "awaiting_user_action",
+                }
+            elif self.path.endswith("/revoke"):
+                payload = {"revoked": True}
+            else:
+                payload = {"recorded": True, "session_id": "session-a"}
+            body = json.dumps(
+                {
+                    "contract_version": "1.0",
+                    "message_type": "response",
+                    "request_id": request["request_id"],
+                    "status": "completed",
+                    "payload": payload,
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/v1/document-status":
             response_payload = {
                     "contract_version": "1.0",
@@ -89,6 +132,7 @@ class _FakeAgentHandler(BaseHTTPRequestHandler):
 class PyRevitAgentClientTests(unittest.TestCase):
     def setUp(self):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeAgentHandler)
+        self.server.requests = []
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.client = AgentClient(
@@ -131,6 +175,47 @@ class PyRevitAgentClientTests(unittest.TestCase):
         self.assertTrue(available)
         self.assertEqual(starts, ["started"])
         self.assertEqual(stopped_client.checks, 3)
+
+    def test_panel_client_manages_and_records_the_current_document_session(self):
+        opened = self.client.open_session("C:\\test", "document-a", "panel-a", 1)
+        continued = self.client.choose_session(
+            "C:\\test",
+            "document-a",
+            "context-a",
+            "panel-a",
+            1,
+            "continue",
+            "session-a",
+        )
+        recorded = self.client.record_message(
+            "C:\\test",
+            "document-a",
+            "context-a",
+            "panel-a",
+            1,
+            "session-a",
+            "user",
+            "hello",
+        )
+        revoked = self.client.revoke_session("panel-a", 2, "context-a")
+
+        self.assertIsNone(opened["active_session_id"])
+        self.assertTrue(opened["requires_user_choice"])
+        self.assertEqual(continued["status"], "awaiting_user_action")
+        self.assertTrue(recorded["recorded"])
+        self.assertTrue(revoked["revoked"])
+        self.assertEqual(
+            [path for path, _ in self.server.requests],
+            [
+                "/v1/sessions/open",
+                "/v1/sessions/choose",
+                "/v1/sessions/messages",
+                "/v1/sessions/revoke",
+            ],
+        )
+        for _, request in self.server.requests:
+            self.assertEqual(request["contract_version"], "1.0")
+            self.assertEqual(request["message_type"], "request")
 
     def test_panel_client_sends_document_snapshot_through_versioned_contract(self):
         snapshot = {
