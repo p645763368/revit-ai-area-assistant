@@ -108,6 +108,18 @@ class _BlockingRevokeClient:
         return {"revoked": True}
 
 
+class _FailOnceRevokeClient:
+    def __init__(self, error_type):
+        self.error_type = error_type
+        self.calls = 0
+
+    def revoke_session(self, panel_instance_id, generation, context_id):
+        self.calls += 1
+        if self.calls == 1:
+            raise self.error_type("revoke unavailable")
+        return {"revoked": True}
+
+
 class _SwitchBetweenChecksEvent(dict):
     def __init__(self, panel):
         dict.__init__(
@@ -415,6 +427,64 @@ class PyRevitPanelTests(unittest.TestCase):
         threads[0].join(2)
         self.assertFalse(threads[0].is_alive())
         self.assertEqual(observed, [snapshot_b])
+
+    def test_failed_revoke_stays_paused_until_explicit_retry_succeeds(self):
+        panel_module = _load_panel_module()
+        panel = panel_module.AiAreaAssistantPanel.__new__(
+            panel_module.AiAreaAssistantPanel
+        )
+        panel._bound_document_fingerprint = "document-a"
+        panel._session_document_fingerprint = "document-a"
+        panel._session_project_directory = "C:\\a"
+        panel._session_request_version = 7
+        panel._panel_instance_id = "panel-a"
+        panel._session_id = "session-a"
+        panel._session_context_id = "context-a"
+        panel._pending_session_id = None
+        panel._pending_session_revoke = None
+        panel._data_root = None
+        panel._document_pause_reason = None
+        panel.SendButton = _Control()
+        panel.SendButton.IsEnabled = True
+        panel.ContinueSessionButton = _Control()
+        panel.NewSessionButton = _Control()
+        panel.RefreshDocumentButton = _Control()
+        panel.SessionState = _Control()
+        panel.ConnectionState = _Control()
+        panel.ConnectionDetail = _Control()
+        panel._client = _FailOnceRevokeClient(panel_module.AgentConnectionError)
+        panel._run_background = lambda callback: callback()
+        panel._dispatch = lambda callback: callback()
+        snapshot_b = {
+            "document_fingerprint": "document-b",
+            "document_path": "C:\\b\\model.rvt",
+        }
+        panel_module.collect_document_status = lambda document, path: snapshot_b
+        observed = []
+        panel._start_document_snapshot_verification = observed.append
+        event_args = types.SimpleNamespace(
+            CurrentActiveView=types.SimpleNamespace(Document=object())
+        )
+
+        panel._on_view_activated(None, event_args)
+
+        self.assertEqual(observed, [])
+        self.assertEqual(panel._client.calls, 1)
+        self.assertFalse(panel.SendButton.IsEnabled)
+        self.assertFalse(panel.ContinueSessionButton.IsEnabled)
+        self.assertFalse(panel.NewSessionButton.IsEnabled)
+        self.assertTrue(panel.RefreshDocumentButton.IsEnabled)
+        self.assertIn("撤销失败", panel.SessionState.Text)
+        self.assertIn("不会验证或打开", panel.ConnectionDetail.Text)
+        panel._on_view_activated(None, event_args)
+        self.assertEqual(panel._client.calls, 1)
+        self.assertEqual(observed, [])
+
+        panel.refresh_document_click(None, None)
+
+        self.assertEqual(panel._client.calls, 2)
+        self.assertEqual(observed, [snapshot_b])
+        self.assertIsNone(panel._pending_session_revoke)
 
     def test_document_switch_invalidates_local_session_before_agent_revoke_returns(self):
         panel_module = _load_panel_module()

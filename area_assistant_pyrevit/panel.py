@@ -44,6 +44,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._session_project_directory = None
         self._session_document_fingerprint = None
         self._data_root = None
+        self._pending_session_revoke = None
         self.SendButton.Click += self.send_click
         self.RetryButton.Click += self.retry_click
         self.RefreshDocumentButton.Click += self.refresh_document_click
@@ -103,6 +104,15 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             self._run_background(self._connect)
 
     def refresh_document_click(self, sender, args):
+        if getattr(self, "_pending_session_revoke", None) is not None:
+            generation, context_id, callback = self._pending_session_revoke
+            self.RefreshDocumentButton.IsEnabled = False
+            self._run_background(
+                lambda: self._revoke_then_continue(
+                    generation, context_id, callback
+                )
+            )
+            return
         document = getattr(revit, "doc", None)
         if document is None:
             self._set_document_status("无活动文档", "请先打开Revit文档")
@@ -168,6 +178,8 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             event_args.CurrentActiveView.Document,
             os.environ.get("AI_AREA_ASSISTANT_TEST_DOCUMENT", ""),
         )
+        if getattr(self, "_pending_session_revoke", None) is not None:
+            return
         if (
             self._bound_document_fingerprint is not None
             and snapshot["document_fingerprint"] != self._bound_document_fingerprint
@@ -465,6 +477,11 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             if after_revoke is None:
                 self._revoke_session(next_version, context_id)
             else:
+                self._pending_session_revoke = (
+                    next_version,
+                    context_id,
+                    after_revoke,
+                )
                 self._run_background(
                     lambda: self._revoke_then_continue(
                         next_version, context_id, after_revoke
@@ -474,22 +491,43 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             after_revoke()
 
     def _revoke_then_continue(self, generation, context_id, callback):
-        self._revoke_session(generation, context_id)
+        if not self._revoke_session(generation, context_id):
+            self._dispatch(
+                lambda: self._session_revoke_failed(generation)
+            )
+            return
         self._dispatch(
             lambda: self._continue_after_revoke(generation, callback)
         )
 
     def _continue_after_revoke(self, generation, callback):
         if generation == self._session_request_version:
+            self._pending_session_revoke = None
             callback()
+
+    def _session_revoke_failed(self, generation):
+        if generation != self._session_request_version:
+            return
+        self.SendButton.IsEnabled = False
+        self.ContinueSessionButton.IsEnabled = False
+        self.NewSessionButton.IsEnabled = False
+        self.RefreshDocumentButton.IsEnabled = True
+        self._set_session_status(
+            "旧会话撤销失败；保持暂停。请点击“验证文档”重试"
+        )
+        self._set_status(
+            "切换暂停",
+            "未确认旧会话已撤销，不会验证或打开新文档会话。",
+        )
 
     def _revoke_session(self, generation, context_id):
         try:
             self._client.revoke_session(
                 self._panel_instance_id, generation, context_id
             )
+            return True
         except AgentConnectionError:
-            pass
+            return False
 
     def _session_failed(self, message, request_version):
         if request_version != self._session_request_version:
