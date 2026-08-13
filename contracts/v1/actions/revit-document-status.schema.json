@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://revit-ai-area-assistant.local/contracts/v1/actions/revit-document-status.schema.json",
+  "title": "Revit document status response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "message_type", "request_id", "status", "payload"],
+  "properties": {
+    "contract_version": {"const": "1.0"},
+    "message_type": {"const": "response"},
+    "request_id": {"type": "string", "minLength": 1},
+    "status": {"const": "completed"},
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "binding_status",
+        "revit_instance_id",
+        "document_title",
+        "document_path",
+        "document_fingerprint",
+        "active_view",
+        "is_modified",
+        "rvt_mcp_status",
+        "write_allowed",
+        "pause_reason"
+      ],
+      "properties": {
+        "binding_status": {"enum": ["unbound", "bound", "paused"]},
+        "revit_instance_id": {"type": "string", "minLength": 1},
+        "document_title": {"type": "string"},
+        "document_path": {"type": "string"},
+        "document_fingerprint": {"type": "string", "minLength": 1},
+        "active_view": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "name"],
+          "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "name": {"type": "string", "minLength": 1}
+          }
+        },
+        "is_modified": {"type": "boolean"},
+        "rvt_mcp_status": {"enum": ["unchecked", "verified", "mismatch"]},
+        "write_allowed": {"type": "boolean"},
+        "pause_reason": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "not_bound",
+            "revit_instance_changed",
+            "document_changed",
+            "document_observation_failed",
+            "rvt_mcp_instance_mismatch",
+            "rvt_mcp_document_mismatch",
+            "rvt_mcp_view_mismatch",
+            "rvt_mcp_modified_mismatch"
+          ]
+        }
+      }
+    }
+  }
+}

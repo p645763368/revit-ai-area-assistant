@@ -1,0 +1,18 @@
+{
+  "contract_version": "1.0",
+  "message_type": "request",
+  "request_id": "req-document-status-demo",
+  "action": "revit.document_status",
+  "payload": {
+    "current_document": {
+      "revit_instance_id": "revit-4312",
+      "document_title": "Area Assistant Development Copy",
+      "document_path": "D:\\RevitTests\\area-assistant-development-copy.rvt",
+      "document_fingerprint": "sha256:example-anonymous-fingerprint",
+      "active_view": {"id": "12345", "name": "GFA Review"},
+      "is_modified": false
+    },
+    "previous_document": null,
+    "previous_pause_reason": null
+  }
+}

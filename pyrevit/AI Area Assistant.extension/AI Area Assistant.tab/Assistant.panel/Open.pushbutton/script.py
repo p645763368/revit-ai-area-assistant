@@ -1,14 +1,22 @@
-"""Minimal read-only pyRevit entry point.
+"""Show the dockable AI Area Assistant panel registered at startup."""
 
-The dockable pane and Agent connection belong to later issues. This command
-only proves that the extension is discoverable and executable in pyRevit.
-"""
+import os
+import sys
 
 from pyrevit import forms
 
 
-forms.alert(
-    "Engineering baseline is ready. The dockable panel is delivered by a later issue.",
-    title="AI Area Assistant",
-    warn_icon=False,
-)
+current = os.path.dirname(__file__)
+while current and not current.endswith(".extension"):
+    parent = os.path.dirname(current)
+    if parent == current:
+        raise RuntimeError("AI Area Assistant extension root was not found.")
+    current = parent
+repository_root = os.path.dirname(os.path.dirname(current))
+if repository_root not in sys.path:
+    sys.path.insert(0, repository_root)
+
+from area_assistant_pyrevit import PANEL_ID
+
+
+forms.open_dockable_panel(PANEL_ID)
