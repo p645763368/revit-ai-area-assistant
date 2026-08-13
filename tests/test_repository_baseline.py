@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RepositoryBaselineTests(unittest.TestCase):
-    def test_pyrevit_command_is_present_and_valid_python(self):
+    def test_pyrevit_command_opens_registered_dockable_panel(self):
         script = ROOT / "pyrevit" / "AI Area Assistant.extension" / "AI Area Assistant.tab" / "Assistant.panel" / "Open.pushbutton" / "script.py"
         opened_panels = []
         fake_forms = types.SimpleNamespace(open_dockable_panel=opened_panels.append)
@@ -29,7 +29,6 @@ class RepositoryBaselineTests(unittest.TestCase):
     def test_pyrevit_dockable_panel_uses_the_supported_ironpython_forms_backend(self):
         startup = ROOT / "pyrevit" / "AI Area Assistant.extension" / "startup.py"
         command = ROOT / "pyrevit" / "AI Area Assistant.extension" / "AI Area Assistant.tab" / "Assistant.panel" / "Open.pushbutton" / "script.py"
-
         self.assertFalse(startup.read_text(encoding="utf-8").startswith("#! python3"))
         self.assertFalse(command.read_text(encoding="utf-8").startswith("#! python3"))
 
@@ -41,7 +40,6 @@ class RepositoryBaselineTests(unittest.TestCase):
             "screenshot.png",
             "AI_Area_Assistant_Data/state.json",
         ]
-
         completed = subprocess.run(
             ["git", "check-ignore", *sensitive_paths],
             cwd=ROOT,

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://revit-ai-area-assistant.local/contracts/v1/actions/revit-document-status-request.schema.json",
+  "title": "Revit document status request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "message_type", "request_id", "action", "payload"],
+  "properties": {
+    "contract_version": {"const": "1.0"},
+    "message_type": {"const": "request"},
+    "request_id": {"type": "string", "minLength": 1},
+    "action": {"const": "revit.document_status"},
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["current_document", "previous_document", "previous_pause_reason"],
+      "properties": {
+        "current_document": {"$ref": "#/$defs/document"},
+        "previous_document": {
+          "oneOf": [
+            {"$ref": "#/$defs/document"},
+            {"type": "null"}
+          ]
+        },
+        "previous_pause_reason": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "document_changed",
+            "document_observation_failed",
+            "revit_instance_changed",
+            "rvt_mcp_instance_mismatch",
+            "rvt_mcp_document_mismatch",
+            "rvt_mcp_view_mismatch",
+            "rvt_mcp_modified_mismatch"
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revit_instance_id",
+        "document_title",
+        "document_path",
+        "document_fingerprint",
+        "active_view",
+        "is_modified"
+      ],
+      "properties": {
+        "revit_instance_id": {"type": "string", "minLength": 1},
+        "document_title": {"type": "string"},
+        "document_path": {"type": "string"},
+        "document_fingerprint": {"type": "string", "minLength": 1},
+        "active_view": {
+          "type": "object",
+          "required": ["id", "name"],
+          "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "name": {"type": "string", "minLength": 1}
+          }
+        },
+        "is_modified": {"type": "boolean"}
+      }
+    }
+  }
+}

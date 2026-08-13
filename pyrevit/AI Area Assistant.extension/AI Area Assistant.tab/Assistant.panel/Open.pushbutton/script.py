@@ -5,6 +5,7 @@ import sys
 
 from pyrevit import forms
 
+
 current = os.path.dirname(__file__)
 while current and not current.endswith(".extension"):
     parent = os.path.dirname(current)
@@ -16,5 +17,6 @@ if repository_root not in sys.path:
     sys.path.insert(0, repository_root)
 
 from area_assistant_pyrevit import PANEL_ID
+
 
 forms.open_dockable_panel(PANEL_ID)

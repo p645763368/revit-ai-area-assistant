@@ -55,10 +55,46 @@ pyRevit面板使用6.5.3默认的IronPython Forms后端；模型API请求始终�
 2. 重新加载pyRevit。
 3. 打开`AI Area Assistant`选项卡，点击`AI Area Assistant`按钮。
 4. 应在Revit右侧打开“AI Area Assistant”面板，先显示“连接中”，然后显示“已连接”。
-5. 输入一条消息并点击“发送”，回复应逐段显示在面板中。
-6. 暂时断开模型服务或配置无效模型后再次发送，Revit应保持可操作，面板应显示错误；可重试错误会启用“重试”。
+5. 面板应显示当前Revit实例、完整文档路径、活动视图、`IsModified`和安全绑定状态。
+6. 输入一条消息并点击“发送”，回复应逐段显示在面板中。
+7. 暂时断开模型服务或配置无效模型后再次发送，Revit应保持可操作，面板应显示错误；可重试错误会启用“重试”。
 
-此人工检查不读取、修改或保存RVT。当前Issue只实现AI对话；Revit文档绑定、rvt-mcp、项目状态持久化和面积任务由后续Issue实现。
+此人工检查不修改或保存RVT。
+
+## 文档安全绑定
+
+Issue #4新增两层只读安全检查：
+
+- pyRevit入口读取当前进程、文档完整路径、活动视图、修改状态和文档指纹。
+- 本地Agent将pyRevit快照与rvt-mcp独立读取的Revit进程、文档标题、完整路径、项目身份、活动视图和修改状态交叉验证，并把任务绑定到一个实例和一个文档。任何证据冲突都会暂停任务并撤销写入许可。
+
+指定开发测试副本的完整路径只通过用户级环境变量提供，不写入仓库：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+  "AI_AREA_ASSISTANT_TEST_DOCUMENT",
+  "<开发测试副本的绝对路径>",
+  "User"
+)
+```
+
+设置后需完全退出并重新启动Revit。路径匹配只是候选授权；只有Agent确认pyRevit与rvt-mcp读取的实例、文档、活动视图和修改状态全部一致后，`write_allowed`才会为`true`。未保存文档、其他模型、原模型、切换后的文档以及任何rvt-mcp证据不一致时始终拒绝写入。
+
+文档切换触发的暂停锁在当前Revit进程内不会自动恢复，切回授权副本或执行pyRevit `Reload`也仍保持拒绝写入。Issue #4尚未提供“开始新任务”交互；人工测试若需重新绑定，必须完全退出并重新启动Revit。后续面板Ticket可以在明确的用户操作下提供新任务/重新绑定入口。
+
+pyRevit通过独立CPython运行Agent，需要配置解释器路径：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+  "AI_AREA_ASSISTANT_PYTHON",
+  "<现代CPython的python.exe绝对路径>",
+  "User"
+)
+```
+
+Agent会优先使用`AI_AREA_ASSISTANT_RVT_MCP_COMMAND`指定的rvt-mcp服务命令；未设置时，从`%LOCALAPPDATA%\RvtMcp\rvt\server\`自动选择已安装服务。打开面板后，“文档安全状态”卡片会自动在后台运行rvt-mcp交叉验证；也可点击“验证文档”重新检查。验证期间Revit界面保持可操作，卡片先显示“验证中”，最长约50秒后显示最终结果；超时或失败时始终保持拒绝写入。切换活动文档会立即触发重新验证和暂停锁，不需要再次点击功能区按钮。
+
+Revit 2026人工验收步骤见[`docs/issue-4-revit-manual-test.md`](docs/issue-4-revit-manual-test.md)。
 
 ## 共享契约
 

@@ -33,6 +33,7 @@ def _load_panel_module():
     fake_ui = types.ModuleType("Autodesk.Revit.UI")
     fake_ui.DockablePaneState = type("DockablePaneState", (), {})
     fake_ui.DockPosition = types.SimpleNamespace(Right="Right")
+    fake_ui.Events = types.SimpleNamespace(ViewActivatedEventArgs=object)
     fake_revit = types.ModuleType("Autodesk.Revit")
     fake_revit.UI = fake_ui
     fake_autodesk = types.ModuleType("Autodesk")
@@ -43,6 +44,11 @@ def _load_panel_module():
     fake_forms = types.SimpleNamespace(WPFPanel=object)
     fake_pyrevit = types.ModuleType("pyrevit")
     fake_pyrevit.forms = fake_forms
+    fake_pyrevit.HOST_APP = types.SimpleNamespace(
+        uiapp=types.SimpleNamespace(ViewActivated=None)
+    )
+    fake_pyrevit.framework = types.SimpleNamespace(EventHandler=object)
+    fake_pyrevit.revit = types.SimpleNamespace(doc=None)
     fake_process = types.ModuleType("area_assistant_pyrevit.process")
     fake_process.start_agent_process = lambda repository_root: None
     modules = {
@@ -80,6 +86,55 @@ class PyRevitPanelTests(unittest.TestCase):
         self.assertTrue(panel.RetryButton.IsEnabled)
         self.assertEqual(panel.ConnectionState.Text, "请求失败")
         self.assertNotEqual(panel.ConnectionDetail.Text, "回复完成")
+
+    def test_latest_document_verification_updates_user_visible_safety_state(self):
+        panel_module = _load_panel_module()
+        panel = panel_module.AiAreaAssistantPanel.__new__(
+            panel_module.AiAreaAssistantPanel
+        )
+        panel._document_request_version = 2
+        panel._document_pause_reason = None
+        panel._bound_document_fingerprint = None
+        panel.DocumentState = _Control()
+        panel.DocumentDetail = _Control()
+        panel.RefreshDocumentButton = _Control()
+        snapshot = {
+            "revit_instance_id": "revit-19880",
+            "document_path": r"D:\test\development-copy.rvt",
+            "document_fingerprint": "fingerprint-1",
+            "active_view": {"name": "Level 1", "id": 42},
+            "is_modified": False,
+            "authorized_path_match": True,
+        }
+        binding = {
+            "binding_status": "bound",
+            "rvt_mcp_status": "verified",
+            "write_allowed": True,
+            "pause_reason": None,
+        }
+
+        panel._document_verified(snapshot, binding, 2)
+
+        self.assertEqual(panel.DocumentState.Text, "bound")
+        self.assertIn("rvt-mcp：verified", panel.DocumentDetail.Text)
+        self.assertIn("写入许可：allowed", panel.DocumentDetail.Text)
+        self.assertIn("暂停原因：none", panel.DocumentDetail.Text)
+        self.assertTrue(panel.RefreshDocumentButton.IsEnabled)
+
+    def test_stale_document_verification_cannot_overwrite_newer_result(self):
+        panel_module = _load_panel_module()
+        panel = panel_module.AiAreaAssistantPanel.__new__(
+            panel_module.AiAreaAssistantPanel
+        )
+        panel._document_request_version = 3
+        panel.DocumentState = _Control()
+        panel.DocumentState.Text = "bound"
+        panel.DocumentDetail = _Control()
+        panel.RefreshDocumentButton = _Control()
+
+        panel._document_failed("old request failed", 2)
+
+        self.assertEqual(panel.DocumentState.Text, "bound")
 
 
 if __name__ == "__main__":

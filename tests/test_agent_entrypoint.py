@@ -17,16 +17,26 @@ class AgentEntrypointTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-
-        result = json.loads(completed.stdout)
         self.assertEqual(
-            result,
+            json.loads(completed.stdout),
             {
                 "contract_version": "1.0",
                 "service": "revit-ai-area-assistant-agent",
                 "status": "ready",
             },
         )
+
+    def test_document_status_rejects_request_outside_shared_v1_envelope(self):
+        completed = subprocess.run(
+            [sys.executable, "-m", "area_assistant_agent", "--document-status"],
+            input=json.dumps({"request_id": "legacy", "current_document": {}}),
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(completed.returncode, 1)
+        self.assertEqual(result["message_type"], "error")
+        self.assertIn("request envelope", result["message"])
 
     def test_serve_reuses_the_single_agent_already_bound_to_the_loopback_port(self):
         with socket.socket() as probe:
@@ -51,7 +61,6 @@ class AgentEntrypointTests(unittest.TestCase):
                     if time.monotonic() >= deadline:
                         self.fail("Agent did not expose health endpoint in time")
                     time.sleep(0.05)
-
             second = subprocess.run(
                 [sys.executable, "-m", "area_assistant_agent", "--serve"],
                 env=environment,

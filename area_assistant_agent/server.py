@@ -2,9 +2,14 @@
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
+import threading
 
 from . import CONTRACT_VERSION, SERVICE_NAME
+from .binding_state_store import BindingStateStore
+from .document_status_runtime import resolve_document_status
 from .model_api import ModelApiError, OpenAICompatibleClient
+from .rvt_mcp_gateway import McpStdioClient
 
 
 class AgentHttpServer(ThreadingHTTPServer):
@@ -50,6 +55,9 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self):
+        if self.path == "/v1/document-status":
+            self._handle_document_status()
+            return
         if self.path != "/v1/chat":
             self.send_error(404)
             return
@@ -90,6 +98,46 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         except ModelApiError as exc:
             self._write_event(_error(request_id, exc.code, str(exc), exc.retryable))
 
+    def _handle_document_status(self):
+        request_id = None
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            request = json.loads(self.rfile.read(length).decode("utf-8"))
+            request_id = request.get("request_id")
+            payload = request.get("payload")
+            if (
+                request.get("contract_version") != CONTRACT_VERSION
+                or request.get("message_type") != "request"
+                or request.get("action") != "revit.document_status"
+                or not request_id
+                or not isinstance(payload, dict)
+            ):
+                raise ValueError("invalid request")
+            with self.server.document_status_lock:
+                with McpStdioClient() as client:
+                    response = resolve_document_status(
+                        request_id=request_id,
+                        current_payload=payload["current_document"],
+                        previous_payload=payload.get("previous_document"),
+                        previous_pause_reason=payload.get("previous_pause_reason"),
+                        authorized_document_path=os.environ.get(
+                            "AI_AREA_ASSISTANT_TEST_DOCUMENT", ""
+                        ),
+                        client=client,
+                        binding_store=self.server.binding_store,
+                    )
+            self._write_json(200, response)
+        except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+            self._write_json(
+                503,
+                _error(
+                    request_id,
+                    "document_status_unavailable",
+                    str(exc),
+                    True,
+                ),
+            )
+
     def _write_json(self, status, payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -112,4 +160,6 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
 def create_server(config):
     server = AgentHttpServer((config.host, config.port), AgentRequestHandler)
     server.model_client = OpenAICompatibleClient(config)
+    server.binding_store = BindingStateStore()
+    server.document_status_lock = threading.Lock()
     return server
