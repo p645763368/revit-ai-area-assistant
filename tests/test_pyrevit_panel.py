@@ -162,13 +162,20 @@ class PyRevitPanelTests(unittest.TestCase):
         panel_module.current_selection = lambda: ([101, 102], 0)
         panel._selected_elements = []
         panel._selected_summaries = []
+        panel._selection_document = None
         panel.SelectionState = _Control()
         panel.SelectionDetail = _Control()
         panel.HighlightSelectionButton = _Control()
         panel.AnalyzeSelectionButton = _Control()
         panel._selection_executor = types.SimpleNamespace(
             request=lambda action, elements=None: panel._selection_event_completed(
-                "selected", [101, 102], 0, None
+                "selected",
+                [
+                    types.SimpleNamespace(Document=types.SimpleNamespace()),
+                    types.SimpleNamespace(Document=types.SimpleNamespace()),
+                ],
+                0,
+                None,
             )
         )
 
@@ -209,6 +216,46 @@ class PyRevitPanelTests(unittest.TestCase):
 
         self.assertEqual(len(sent), 1)
         self.assertIn("已选择 1 个来源元素", sent[0])
+
+    def test_document_switch_clears_selection_before_initial_binding_completes(self):
+        panel_module = _load_panel_module()
+        panel = panel_module.AiAreaAssistantPanel.__new__(panel_module.AiAreaAssistantPanel)
+
+        class _Document:
+            def __init__(self, name):
+                self.name = name
+
+            def Equals(self, other):
+                return self is other
+
+        old_document = _Document("old")
+        new_document = _Document("new")
+        panel._selection_document = old_document
+        panel._selected_elements = [types.SimpleNamespace(Document=old_document)]
+        panel._selected_summaries = [{"element_id": "101"}]
+        panel._bound_document_fingerprint = None
+        panel._document_pause_reason = None
+        panel.HighlightSelectionButton = _Control()
+        panel.HighlightSelectionButton.IsEnabled = True
+        panel.AnalyzeSelectionButton = _Control()
+        panel.AnalyzeSelectionButton.IsEnabled = True
+        panel.SelectionState = _Control()
+        panel.SelectionDetail = _Control()
+        panel._start_document_snapshot_verification = lambda snapshot: None
+        panel_module.collect_document_status = lambda document, path: {
+            "document_fingerprint": document.name,
+        }
+        event_args = types.SimpleNamespace(
+            CurrentActiveView=types.SimpleNamespace(Document=new_document)
+        )
+
+        panel._on_view_activated(None, event_args)
+
+        self.assertEqual(panel._selected_elements, [])
+        self.assertEqual(panel._selected_summaries, [])
+        self.assertIsNone(panel._selection_document)
+        self.assertFalse(panel.AnalyzeSelectionButton.IsEnabled)
+        self.assertEqual(panel.SelectionState.Text, "未选择")
 
 
 if __name__ == "__main__":

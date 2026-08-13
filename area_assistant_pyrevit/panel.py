@@ -38,6 +38,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._document_request_version = 0
         self._selected_elements = []
         self._selected_summaries = []
+        self._selection_document = None
         self._selection_executor = create_selection_executor(
             self._selection_event_completed
         )
@@ -154,16 +155,21 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self.RefreshDocumentButton.IsEnabled = True
 
     def _on_view_activated(self, sender, event_args):
+        active_document = event_args.CurrentActiveView.Document
         snapshot = collect_document_status(
-            event_args.CurrentActiveView.Document,
+            active_document,
             os.environ.get("AI_AREA_ASSISTANT_TEST_DOCUMENT", ""),
         )
+        if (
+            self._selection_document is not None
+            and not self._selection_document.Equals(active_document)
+        ):
+            self._clear_selection("文档已切换，请重新选择来源元素")
         if (
             self._bound_document_fingerprint is not None
             and snapshot["document_fingerprint"] != self._bound_document_fingerprint
         ):
             self._document_pause_reason = "document_changed"
-            self._clear_selection("文档已切换，请重新选择来源元素")
         self._start_document_snapshot_verification(snapshot)
 
     def read_selection_click(self, sender, args):
@@ -212,6 +218,9 @@ class AiAreaAssistantPanel(forms.WPFPanel):
 
     def _update_selection(self, elements, rejected_count):
         self._selected_elements = list(elements)
+        self._selection_document = (
+            self._selected_elements[0].Document if self._selected_elements else None
+        )
         self._selected_summaries = summarize_elements(self._selected_elements)
         count = len(self._selected_elements)
         self.HighlightSelectionButton.IsEnabled = count > 0
@@ -227,6 +236,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
     def _clear_selection(self, detail):
         self._selected_elements = []
         self._selected_summaries = []
+        self._selection_document = None
         self.HighlightSelectionButton.IsEnabled = False
         self.AnalyzeSelectionButton.IsEnabled = False
         self._set_selection_status("未选择", detail)
