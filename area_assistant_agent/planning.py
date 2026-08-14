@@ -230,7 +230,25 @@ class PlanningAgent:
                 turn = self.model_client.planning_turn(messages, TOOL_DEFINITIONS)
                 calls = turn.get("tool_calls", [])
                 if calls:
-                    messages.append({"role": "assistant", "content": turn.get("content"), "tool_calls": calls})
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": turn.get("content"),
+                            "tool_calls": [
+                                {
+                                    "id": call["id"],
+                                    "type": "function",
+                                    "function": {
+                                        "name": call["name"],
+                                        "arguments": json.dumps(
+                                            call["arguments"], ensure_ascii=False
+                                        ),
+                                    },
+                                }
+                                for call in calls
+                            ],
+                        }
+                    )
                     for call in calls:
                         name = call.get("name")
                         arguments = call.get("arguments")

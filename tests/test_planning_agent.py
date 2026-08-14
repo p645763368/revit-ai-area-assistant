@@ -1,4 +1,5 @@
 import json
+import copy
 from pathlib import Path
 import tempfile
 import unittest
@@ -20,7 +21,7 @@ class _ScriptedModel:
         self.requests = []
 
     def planning_turn(self, messages, tools):
-        self.requests.append((messages, tools))
+        self.requests.append((copy.deepcopy(messages), copy.deepcopy(tools)))
         return self.turns.pop(0)
 
 
@@ -98,6 +99,14 @@ class PlanningAgentTests(unittest.TestCase):
         capture_call = next(call for call in mcp.calls if call[0] == "capture_view_image")
         self.assertTrue(Path(capture_call[1]["output_path"]).is_relative_to(Path(tempfile.gettempdir())))
         self.assertTrue(any(isinstance(message.get("content"), list) for message in model.requests[-1][0]))
+        assistant_tool_message = next(
+            message for message in model.requests[1][0]
+            if message.get("role") == "assistant" and message.get("tool_calls")
+        )
+        self.assertEqual(
+            assistant_tool_message["tool_calls"][0]["function"]["name"],
+            "inspect_revit_model",
+        )
 
     def test_read_only_boundary_rejects_unknown_or_write_shaped_tools(self):
         tools = ReadOnlyRevitTools(_McpClient(), Path(tempfile.gettempdir()))
