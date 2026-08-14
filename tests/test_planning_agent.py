@@ -8,6 +8,7 @@ from area_assistant_agent.planning import (
     KnowledgeCatalog,
     PlanningAgent,
     PlanningResult,
+    READ_ONLY_QUERIES,
     ReadOnlyRevitTools,
 )
 
@@ -116,6 +117,14 @@ class PlanningAgentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "read-only"):
             tools.execute("inspect_revit_model", {"query": "delete"})
 
+    def test_boundary_candidates_expose_exact_curve_topology_not_bounding_boxes(self):
+        code = READ_ONLY_QUERIES["boundary_candidates"]
+
+        self.assertIn("GetEdgesAsCurveLoops", code)
+        self.assertIn("LocationCurve", code)
+        self.assertIn("OST_AreaSchemeLines", code)
+        self.assertNotIn("get_BoundingBox", code)
+
     def test_parallel_tool_results_precede_visual_follow_up_message(self):
         final = json.dumps(
             {
@@ -157,6 +166,23 @@ class PlanningAgentTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             PlanningResult.from_dict(invalid)
+
+    def test_screenshot_staging_file_is_removed_when_copy_cannot_complete(self):
+        class BrokenCaptureClient(_McpClient):
+            def call_tool(self, name, arguments):
+                result = super().call_tool(name, arguments)
+                if name == "capture_view_image":
+                    result["saved_path"] = arguments["output_path"] + ".missing"
+                return result
+
+        client = BrokenCaptureClient()
+        with tempfile.TemporaryDirectory() as directory:
+            tools = ReadOnlyRevitTools(client, Path(directory))
+            with self.assertRaises(FileNotFoundError):
+                tools.execute("capture_revit_view", {})
+
+        capture = next(call for call in client.calls if call[0] == "capture_view_image")
+        self.assertFalse(Path(capture[1]["output_path"]).exists())
 
 
 if __name__ == "__main__":

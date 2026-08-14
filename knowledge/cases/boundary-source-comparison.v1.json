@@ -1,7 +1,7 @@
 {
   "name": "anonymized-boundary-source-comparison",
   "version": "1.0.0",
-  "provenance": "Anonymized conclusions from the validated area-calculation case referenced by product specification Issue #1; no conversation, screenshot, geometry or project identity is included.",
+  "provenance": "Complete set of anonymized reusable conclusions explicitly listed for the validated area-calculation case in product specification Issue #1. The raw conversation remains project evidence and is intentionally excluded from Git because it can contain real project data.",
   "applicability": "Use as reasoning guidance when walls, floors, roofs or existing boundaries disagree about an Area footprint.",
   "observations": [
     "A roof-level structural floor can be stronger evidence for the covered footprint than the floor element hosted on the target level.",

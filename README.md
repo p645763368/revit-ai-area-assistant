@@ -105,7 +105,7 @@ Revit 2026人工验收步骤见[`docs/issue-4-revit-manual-test.md`](docs/issue-
 
 公共契约说明见[`contracts/README.md`](contracts/README.md)。后续并行任务必须复用`contracts/v1`信封；任何不兼容变化都需要新主版本并在PR中说明影响。
 
-Issue #7 在不改变 v1 信封的前提下新增兼容 action `analysis.plan`。面板的“扫描与方案”按钮会在当前已验证文档和已激活会话内启动只读规划：Agent 加载 `knowledge/rules` 与 `knowledge/cases` 中带版本、来源和适用范围的快照，自主选择固定只读模型查询，并在需要时调用 rvt-mcp `capture_view_image`。截图只保存在忽略的当前会话数据目录，作为视觉辅助；边界判断仍须由结构化 Revit 几何复核。
+Issue #7 在不改变 v1 信封的前提下新增兼容 action `analysis.plan`。面板的“扫描与方案”按钮会在当前已验证文档和已激活会话内启动只读规划：Agent 加载 `knowledge/rules` 与 `knowledge/cases` 中带版本、来源和适用范围的快照，自主选择固定只读模型查询，并在需要时调用 rvt-mcp `capture_view_image`。截图通过 rvt-mcp 允许的临时目录中转并在 `finally` 中清理，持久副本只保存在忽略的当前会话数据目录；截图只是视觉辅助，边界判断仍须由 Revit 曲线环、墙定位曲线和现有 Area Boundary 曲线复核。
 
 规划结果固定返回 2 至 4 个可点击选项，恰好一个推荐项，每项显示依据和影响。用户既可点击选项，也可在原输入框自由说明；两者都会通过同一文档会话的历史继续规划。该功能不创建 Transaction、不修改模型、不自动保存 RVT。真实模型 API 与 Revit 2026 验收步骤见 [`docs/issue-7-revit-manual-test.md`](docs/issue-7-revit-manual-test.md)。
 

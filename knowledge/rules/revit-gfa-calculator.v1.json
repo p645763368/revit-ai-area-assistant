@@ -1,13 +1,24 @@
 {
   "name": "Revit_GFA_Calculator",
   "version": "1.0.0",
-  "provenance": "Reviewed and anonymized snapshot derived from the validated Revit GFA workflow referenced by product specification Issue #1.",
+  "provenance": "Reviewed and anonymized Demo snapshot of every reusable Revit GFA rule explicitly enumerated in product specification Issue #1. The original personal-skill file was not present in the repository and is not claimed as a byte-for-byte source.",
   "applicability": "Revit 2026 demo planning for Area Scheme, Area Plan, boundary-source comparison, Area placement, tags and schedule QA. Project policy still requires user confirmation.",
   "rules": [
-    "Area Plans do not create Area Boundary lines automatically.",
-    "Use exact Revit geometry to validate a boundary; never substitute a bounding box for a footprint.",
-    "Keep geometric coverage evidence separate from regulatory or GFA policy decisions.",
-    "Place Areas and tags at points verified to be inside a valid closed circuit.",
-    "Treat user edits and confirmed project rules as higher priority than a new AI inference."
+    "Area Plans do not create Area Boundary lines automatically; boundary generation is a separate operation.",
+    "Use exact Revit curve loops and topology to validate a boundary; never substitute a bounding box for a footprint.",
+    "Walls, floors, roofs and existing Area Boundary lines are candidate evidence rather than universally authoritative sources.",
+    "A roof-level structural floor can be stronger coverage evidence than a floor hosted on the target level.",
+    "Keep geometric coverage evidence separate from regulatory, classification and GFA-factor policy decisions.",
+    "Uncovered corridors, balconies and other special regions require project confirmation rather than a universal fixed factor.",
+    "A screenshot is supporting evidence only and must be checked against structured Revit geometry.",
+    "Place Areas and tags at points verified to be inside a valid closed circuit; do not use a bounding-box center for a complex region.",
+    "Check Area Boundary breaks, self-intersections, illegal short curves, zero-area circuits and duplicate Areas as blocking QA.",
+    "Review hidden as well as visible schedule grouping fields, and disable itemized rows when same-level same-classification Areas must aggregate.",
+    "Reuse an existing Color Scheme and a user-confirmed Area Tag type; do not silently replace project graphics.",
+    "A first use of a classification or GFA factor remains a proposal until the user confirms it for the current project.",
+    "Priority order is current user instruction, manually locked result, confirmed project rule, prior AI result, then new AI inference.",
+    "Treat user edits as higher-priority external changes and do not silently overwrite a locked region.",
+    "A committed Revit transaction is not proof of success; read back model elements and verify the resulting view or schedule.",
+    "Do not automatically save the RVT after analysis, draft generation, QA or user confirmation."
   ]
 }

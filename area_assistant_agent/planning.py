@@ -27,18 +27,46 @@ READ_ONLY_QUERIES = {
     .OfClass(typeof(AreaScheme)).Cast<AreaScheme>()
     .Select(x => new { id = x.Id.Value.ToString(), uniqueId = x.UniqueId, name = x.Name, isGrossBuildingArea = x.IsGrossBuildingArea })
     .ToList();""",
-    "boundary_candidates": """var categories = new[] { BuiltInCategory.OST_Walls, BuiltInCategory.OST_Floors, BuiltInCategory.OST_Roofs };
-return categories.SelectMany(category => new FilteredElementCollector(doc)
-    .OfCategory(category).WhereElementIsNotElementType().ToElements())
-    .Select(x => new {
-        id = x.Id.Value.ToString(), uniqueId = x.UniqueId,
-        category = x.Category == null ? null : x.Category.Name,
-        name = x.Name,
-        box = x.get_BoundingBox(null) == null ? null : new {
-            min = new[] { x.get_BoundingBox(null).Min.X, x.get_BoundingBox(null).Min.Y, x.get_BoundingBox(null).Min.Z },
-            max = new[] { x.get_BoundingBox(null).Max.X, x.get_BoundingBox(null).Max.Y, x.get_BoundingBox(null).Max.Z }
+    "boundary_candidates": """Func<Curve, object> curveData = curve => new {
+    curveType = curve.GetType().Name,
+    length = curve.Length,
+    arcCenter = curve is Arc ? new[] { ((Arc)curve).Center.X, ((Arc)curve).Center.Y, ((Arc)curve).Center.Z } : null,
+    arcRadius = curve is Arc ? (double?)((Arc)curve).Radius : null,
+    start = new[] { curve.GetEndPoint(0).X, curve.GetEndPoint(0).Y, curve.GetEndPoint(0).Z },
+    end = new[] { curve.GetEndPoint(1).X, curve.GetEndPoint(1).Y, curve.GetEndPoint(1).Z },
+    tessellated = curve.Tessellate().Select(point => new[] { point.X, point.Y, point.Z }).ToList()
+};
+var categories = new[] { BuiltInCategory.OST_Walls, BuiltInCategory.OST_Floors, BuiltInCategory.OST_Roofs };
+var modelElements = categories.SelectMany(category => new FilteredElementCollector(doc, uidoc.ActiveView.Id)
+    .OfCategory(category).WhereElementIsNotElementType().ToElements());
+var areaBoundaryLines = new FilteredElementCollector(doc, uidoc.ActiveView.Id)
+    .OfCategory(BuiltInCategory.OST_AreaSchemeLines).WhereElementIsNotElementType().ToElements();
+var candidates = new List<object>();
+foreach (var element in modelElements.Concat(areaBoundaryLines).Take(500)) {
+    var profileLoops = new List<object>();
+    var host = element as HostObject;
+    if (host != null) {
+        foreach (var reference in HostObjectUtils.GetTopFaces(host)) {
+            var face = host.GetGeometryObjectFromReference(reference) as Face;
+            if (face == null) continue;
+            foreach (var loop in face.GetEdgesAsCurveLoops())
+                profileLoops.Add(loop.Select(curve => curveData(curve)).ToList());
         }
-    }).ToList();""",
+    }
+    var wall = element as Wall;
+    var location = element.Location as LocationCurve;
+    var areaLine = element as CurveElement;
+    candidates.Add(new {
+        id = element.Id.Value.ToString(), uniqueId = element.UniqueId,
+        category = element.Category == null ? null : element.Category.Name,
+        name = element.Name,
+        wallWidth = wall == null ? (double?)null : wall.Width,
+        locationCurve = location == null ? null : curveData(location.Curve),
+        areaBoundaryCurve = areaLine == null ? null : curveData(areaLine.GeometryCurve),
+        profileLoops = profileLoops
+    });
+}
+return candidates;""",
 }
 
 
@@ -113,7 +141,6 @@ class PlanningResult:
             raise ValueError("planning result text must not be empty")
         if not isinstance(options, list) or not 2 <= len(options) <= 4:
             raise ValueError("planning result must contain two to four options")
-        identifiers = set()
         recommended = 0
         for option in options:
             if not isinstance(option, dict) or set(option) != {
@@ -124,10 +151,9 @@ class PlanningResult:
                 raise ValueError("planning option text must not be empty")
             if not isinstance(option.get("recommended"), bool):
                 raise ValueError("planning recommendation flag must be boolean")
-            identifiers.add(option["id"])
             recommended += int(option["recommended"])
-        if len(identifiers) != len(options) or recommended != 1:
-            raise ValueError("planning options require unique ids and one recommendation")
+        if recommended != 1:
+            raise ValueError("planning options require one recommendation")
         return cls(value["summary"].strip(), value["question"].strip(), options)
 
     def as_dict(self) -> dict:
@@ -174,15 +200,22 @@ class ReadOnlyRevitTools:
             payload = {"output_path": str(output_path), "pixel_size": 1600, "image_format": "png"}
             if view_id is not None:
                 payload["view_id"] = view_id
-            result = self.client.call_tool("capture_view_image", payload)
-            saved_path = Path(result.get("saved_path", output_path))
-            image_bytes = saved_path.read_bytes()
-            stable_path.write_bytes(image_bytes)
-            if saved_path != stable_path:
-                try:
-                    saved_path.unlink()
-                except OSError:
-                    pass
+            saved_path = output_path
+            try:
+                result = self.client.call_tool("capture_view_image", payload)
+                saved_path = Path(result.get("saved_path", output_path))
+                image_bytes = saved_path.read_bytes()
+                stable_path.write_bytes(image_bytes)
+            finally:
+                cleanup_paths = {output_path, saved_path}
+                cleanup_paths.discard(stable_path)
+                for cleanup_path in cleanup_paths:
+                    try:
+                        cleanup_path.unlink()
+                    except OSError:
+                        pass
+            if not stable_path.is_file():
+                raise RuntimeError("rvt-mcp screenshot could not be retained")
             audit = {"view_id": result.get("view_id", view_id), "saved_path": str(stable_path)}
             return ToolExecution(
                 audit,

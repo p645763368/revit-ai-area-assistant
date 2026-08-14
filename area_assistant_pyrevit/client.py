@@ -84,7 +84,6 @@ def _valid_session_payload(action, payload):
         ):
             return False
         recommended = 0
-        identifiers = set()
         for option in payload["options"]:
             if (
                 not isinstance(option, dict)
@@ -97,9 +96,8 @@ def _valid_session_payload(action, payload):
                 or not isinstance(option.get("recommended"), bool)
             ):
                 return False
-            identifiers.add(option["id"])
             recommended += int(option["recommended"])
-        return len(identifiers) == len(payload["options"]) and recommended == 1
+        return recommended == 1
     return False
 
 
