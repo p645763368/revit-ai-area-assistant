@@ -1,8 +1,10 @@
 import json
 import os
+from pathlib import Path
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from urllib.error import URLError
@@ -25,6 +27,28 @@ class AgentEntrypointTests(unittest.TestCase):
                 "status": "ready",
             },
         )
+
+    def test_show_data_root_reports_the_resolved_external_directory(self):
+        with tempfile.TemporaryDirectory() as project_directory:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "area_assistant_agent",
+                    "--show-data-root",
+                    project_directory,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            result = json.loads(completed.stdout)
+            self.assertEqual(
+                Path(result["data_root"]),
+                (Path(project_directory) / "AI_Area_Assistant_Data").resolve(),
+            )
+            self.assertTrue(Path(result["data_root"]).is_absolute())
 
     def test_document_status_rejects_request_outside_shared_v1_envelope(self):
         completed = subprocess.run(

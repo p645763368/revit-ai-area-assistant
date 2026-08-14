@@ -22,6 +22,61 @@ class AgentConnectionError(Exception):
     pass
 
 
+def _nonempty_string(value):
+    return isinstance(value, STRING_TYPES) and bool(value)
+
+
+def _valid_session_payload(action, payload):
+    if not isinstance(payload, dict):
+        return False
+    if action == "session.open":
+        sessions = payload.get("sessions")
+        if (
+            set(payload)
+            != {
+                "active_session_id",
+                "context_id",
+                "data_root",
+                "requires_user_choice",
+                "sessions",
+            }
+            or payload.get("active_session_id") is not None
+            or not _nonempty_string(payload.get("context_id"))
+            or not _nonempty_string(payload.get("data_root"))
+            or payload.get("requires_user_choice") is not True
+            or not isinstance(sessions, list)
+        ):
+            return False
+        for item in sessions:
+            if (
+                not isinstance(item, dict)
+                or set(item) != {"session_id", "status", "updated_at"}
+                or not _nonempty_string(item.get("session_id"))
+                or item.get("status") not in ("idle", "awaiting_user_action")
+                or not _nonempty_string(item.get("updated_at"))
+            ):
+                return False
+        return True
+    if action == "session.choose":
+        return (
+            set(payload)
+            == {"active_session_id", "context_id", "data_root", "status"}
+            and _nonempty_string(payload.get("active_session_id"))
+            and _nonempty_string(payload.get("context_id"))
+            and _nonempty_string(payload.get("data_root"))
+            and payload.get("status") in ("idle", "awaiting_user_action")
+        )
+    if action == "session.message":
+        return (
+            set(payload) == {"recorded", "session_id"}
+            and payload.get("recorded") is True
+            and _nonempty_string(payload.get("session_id"))
+        )
+    if action == "session.revoke":
+        return set(payload) == {"revoked"} and payload.get("revoked") is True
+    return False
+
+
 class AgentClient:
     def __init__(self, base_url="http://127.0.0.1:8765", timeout_seconds=2):
         self.base_url = base_url.rstrip("/")
@@ -164,6 +219,132 @@ class AgentClient:
             raise
         except (HTTPError, OSError, ValueError, URLError) as exc:
             raise AgentConnectionError("Document verification failed: {}".format(exc))
+
+    def open_session(
+        self,
+        project_directory,
+        document_fingerprint,
+        panel_instance_id,
+        generation,
+    ):
+        return self._post_session_json(
+            "/v1/sessions/open",
+            "session.open",
+            {
+                "document_fingerprint": document_fingerprint,
+                "generation": generation,
+                "panel_instance_id": panel_instance_id,
+                "project_directory": project_directory,
+            },
+        )
+
+    def choose_session(
+        self,
+        project_directory,
+        document_fingerprint,
+        context_id,
+        panel_instance_id,
+        generation,
+        choice,
+        session_id,
+    ):
+        return self._post_session_json(
+            "/v1/sessions/choose",
+            "session.choose",
+            {
+                "choice": choice,
+                "context_id": context_id,
+                "document_fingerprint": document_fingerprint,
+                "generation": generation,
+                "panel_instance_id": panel_instance_id,
+                "project_directory": project_directory,
+                "session_id": session_id,
+            },
+        )
+
+    def record_message(
+        self,
+        project_directory,
+        document_fingerprint,
+        context_id,
+        panel_instance_id,
+        generation,
+        session_id,
+        role,
+        content,
+    ):
+        return self._post_session_json(
+            "/v1/sessions/messages",
+            "session.message",
+            {
+                "content": content,
+                "context_id": context_id,
+                "document_fingerprint": document_fingerprint,
+                "generation": generation,
+                "panel_instance_id": panel_instance_id,
+                "project_directory": project_directory,
+                "role": role,
+                "session_id": session_id,
+            },
+        )
+
+    def revoke_session(self, panel_instance_id, generation, context_id):
+        return self._post_session_json(
+            "/v1/sessions/revoke",
+            "session.revoke",
+            {
+                "context_id": context_id,
+                "generation": generation,
+                "panel_instance_id": panel_instance_id,
+            },
+        )
+
+    def _post_session_json(self, path, action, payload):
+        request_id = "session-{}".format(uuid.uuid4().hex)
+        envelope = {
+            "contract_version": CONTRACT_VERSION,
+            "message_type": "request",
+            "request_id": request_id,
+            "action": action,
+            "payload": payload,
+        }
+        request = Request(
+            self.base_url + path,
+            data=json.dumps(envelope, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            response = urlopen(request, timeout=self.timeout_seconds)
+            try:
+                envelope = json.loads(response.read().decode("utf-8"))
+            finally:
+                response.close()
+            if (
+                not isinstance(envelope, dict)
+                or set(envelope)
+                != {
+                    "contract_version",
+                    "message_type",
+                    "request_id",
+                    "status",
+                    "payload",
+                }
+                or envelope.get("contract_version") != CONTRACT_VERSION
+                or envelope.get("message_type") != "response"
+                or envelope.get("request_id") != request_id
+                or envelope.get("status") != "completed"
+                or not _valid_session_payload(action, envelope.get("payload"))
+            ):
+                raise AgentConnectionError(
+                    "Session request returned an incompatible v1 response."
+                )
+            return envelope["payload"]
+        except AgentConnectionError:
+            raise
+        except (HTTPError, OSError, TypeError, ValueError, URLError) as exc:
+            raise AgentConnectionError(
+                "Local Agent session request failed: {}".format(exc)
+            )
 
 
 def ensure_agent_available(client, start_agent, attempts=20, delay_seconds=0.25):

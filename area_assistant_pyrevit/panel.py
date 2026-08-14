@@ -5,6 +5,7 @@ from __future__ import unicode_literals
 
 import os
 import threading
+import uuid
 
 import Autodesk.Revit.UI as UI
 from System import Action
@@ -42,9 +43,20 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._selection_executor = create_selection_executor(
             self._selection_event_completed
         )
+        self._session_request_version = 0
+        self._panel_instance_id = uuid.uuid4().hex
+        self._session_id = None
+        self._session_context_id = None
+        self._pending_session_id = None
+        self._session_project_directory = None
+        self._session_document_fingerprint = None
+        self._data_root = None
+        self._pending_session_revoke = None
         self.SendButton.Click += self.send_click
         self.RetryButton.Click += self.retry_click
         self.RefreshDocumentButton.Click += self.refresh_document_click
+        self.ContinueSessionButton.Click += self.continue_session_click
+        self.NewSessionButton.Click += self.new_session_click
         self.ReadSelectionButton.Click += self.read_selection_click
         self.PickSelectionButton.Click += self.pick_selection_click
         self.HighlightSelectionButton.Click += self.highlight_selection_click
@@ -54,6 +66,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._set_status("连接中", "正在连接本地 Agent…")
         self._set_document_status("待验证", "打开文档后点击“验证文档”")
         self._set_selection_status("未选择", "请选择Floor、Roof或Wall作为边界来源")
+        self._set_session_status("等待文档验证")
         self._run_background(self._connect)
 
     def _connect(self):
@@ -86,6 +99,14 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         if message:
             self._send(message)
 
+    def continue_session_click(self, sender, args):
+        if self._pending_session_id:
+            self._choose_session("continue", self._pending_session_id)
+
+    def new_session_click(self, sender, args):
+        if self.NewSessionButton.IsEnabled and self._session_document_fingerprint:
+            self._choose_session("new", None)
+
     def retry_click(self, sender, args):
         if self._last_message:
             self._send(self._last_message)
@@ -95,6 +116,15 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             self._run_background(self._connect)
 
     def refresh_document_click(self, sender, args):
+        if getattr(self, "_pending_session_revoke", None) is not None:
+            generation, context_id, callback = self._pending_session_revoke
+            self.RefreshDocumentButton.IsEnabled = False
+            self._run_background(
+                lambda: self._revoke_then_continue(
+                    generation, context_id, callback
+                )
+            )
+            return
         document = getattr(revit, "doc", None)
         if document is None:
             self._set_document_status("无活动文档", "请先打开Revit文档")
@@ -147,6 +177,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             self._document_summary(snapshot, binding),
         )
         self.RefreshDocumentButton.IsEnabled = True
+        self._start_session_for_snapshot(snapshot)
 
     def _document_failed(self, message, request_version):
         if request_version != self._document_request_version:
@@ -160,8 +191,10 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             active_document,
             os.environ.get("AI_AREA_ASSISTANT_TEST_DOCUMENT", ""),
         )
+        if getattr(self, "_pending_session_revoke", None) is not None:
+            return
         if (
-            self._selection_document is not None
+            getattr(self, "_selection_document", None) is not None
             and not self._selection_document.Equals(active_document)
         ):
             self._clear_selection("文档已切换，请重新选择来源元素")
@@ -170,6 +203,15 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             and snapshot["document_fingerprint"] != self._bound_document_fingerprint
         ):
             self._document_pause_reason = "document_changed"
+        if (
+            getattr(self, "_session_document_fingerprint", None) is not None
+            and snapshot["document_fingerprint"]
+            != self._session_document_fingerprint
+        ):
+            self._pause_session_for_document_change(
+                lambda: self._start_document_snapshot_verification(snapshot)
+            )
+            return
         self._start_document_snapshot_verification(snapshot)
 
     def read_selection_click(self, sender, args):
@@ -273,47 +315,95 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         return "\n".join(lines)
 
     def _send(self, message):
+        context = self._session_context()
+        if context is None:
+            self._set_status("等待选择", "请先为当前文档选择继续或新建会话")
+            return
         self._last_message = message
         self.MessageInput.Text = ""
         self.Transcript.AppendText("你：{}\nAI：".format(message))
         self._set_busy(True)
         self.RetryButton.IsEnabled = False
         self._set_status("回答中", "正在接收流式回复…")
-        self._run_background(lambda: self._stream(message))
+        self._run_background(lambda: self._stream(message, context))
 
-    def _stream(self, message):
+    def _stream(self, message, context=None):
+        context = context or self._session_context()
+        if context is None or not self._session_is_current(context):
+            return
         try:
+            self._client.record_message(
+                context[1],
+                context[2],
+                context[3],
+                self._panel_instance_id,
+                context[0],
+                context[4],
+                "user",
+                message,
+            )
+            complete = []
             for event in self._client.stream_chat(message):
+                if not self._session_is_current(context):
+                    return
                 if event.get("message_type") == "response":
                     delta = event.get("payload", {}).get("delta")
                     if delta:
+                        complete.append(delta)
                         self._dispatch(lambda text=delta: self.Transcript.AppendText(text))
                     if event.get("status") == "completed":
-                        self._dispatch(self._reply_completed)
+                        assistant_message = event.get("payload", {}).get(
+                            "message", "".join(complete)
+                        )
+                        if not self._session_is_current(context):
+                            return
+                        self._client.record_message(
+                            context[1],
+                            context[2],
+                            context[3],
+                            self._panel_instance_id,
+                            context[0],
+                            context[4],
+                            "assistant",
+                            assistant_message,
+                        )
+                        self._dispatch(
+                            lambda item=context: self._reply_completed(item)
+                        )
                 elif event.get("message_type") == "error":
                     self._dispatch(
-                        lambda item=event: self._reply_failed(
+                        lambda item=event, session=context: self._reply_failed(
                             item.get("message", "模型 API 请求失败。"),
                             item.get("retryable", False),
+                            session,
                         )
                     )
         except AgentConnectionError as exc:
             message = str(exc)
-            self._dispatch(lambda text=message: self._reply_failed(text, True))
+            self._dispatch(
+                lambda text=message, session=context: self._reply_failed(
+                    text, True, session
+                )
+            )
 
-    def _reply_completed(self):
+    def _reply_completed(self, context=None):
+        if context is not None and not self._session_is_current(context):
+            return
         self.Transcript.AppendText("\n\n")
         self._set_busy(False)
         self._set_status("已连接", "回复完成")
 
-    def _reply_failed(self, message, retryable):
+    def _reply_failed(self, message, retryable, context=None):
+        if context is not None and not self._session_is_current(context):
+            return
         self.Transcript.AppendText("\n[错误] {}\n\n".format(message))
         self._set_busy(False)
         self._set_status("请求失败", message)
         self.RetryButton.IsEnabled = bool(retryable)
 
     def _set_busy(self, busy):
-        self.SendButton.IsEnabled = not busy
+        session_ready = getattr(self, "_session_id", "legacy") is not None
+        self.SendButton.IsEnabled = not busy and session_ready
         if busy:
             self.RetryButton.IsEnabled = False
 
@@ -328,6 +418,243 @@ class AiAreaAssistantPanel(forms.WPFPanel):
     def _set_selection_status(self, state, detail):
         self.SelectionState.Text = state
         self.SelectionDetail.Text = detail
+
+    def _start_session_for_snapshot(self, snapshot):
+        fingerprint = snapshot.get("document_fingerprint")
+        document_path = snapshot.get("document_path")
+        if not fingerprint or not document_path:
+            self._pause_session_for_document_change()
+            self._set_session_status("请先保存当前Revit文档")
+            return
+        if (
+            fingerprint == self._session_document_fingerprint
+            and (self._session_id is not None or self._session_context_id is not None)
+        ):
+            return
+        self._session_request_version += 1
+        request_version = self._session_request_version
+        self._session_id = None
+        self._session_context_id = None
+        self._pending_session_id = None
+        self._session_document_fingerprint = fingerprint
+        self._session_project_directory = os.path.dirname(document_path)
+        self.ContinueSessionButton.IsEnabled = False
+        self.NewSessionButton.IsEnabled = False
+        self.SendButton.IsEnabled = False
+        self._set_session_status("正在读取当前文档的会话…")
+
+        def open_current_session():
+            try:
+                result = self._client.open_session(
+                    self._session_project_directory,
+                    fingerprint,
+                    self._panel_instance_id,
+                    request_version,
+                )
+            except AgentConnectionError as exc:
+                message = str(exc)
+                self._dispatch(
+                    lambda text=message, version=request_version: self._session_failed(
+                        text, version
+                    )
+                )
+                return
+            self._dispatch(
+                lambda payload=result, version=request_version, current=fingerprint: self._session_opened(
+                    payload, version, current
+                )
+            )
+
+        self._run_background(open_current_session)
+
+    def _session_opened(self, result, request_version, fingerprint):
+        if (
+            request_version != self._session_request_version
+            or fingerprint != self._session_document_fingerprint
+        ):
+            return
+        sessions = result.get("sessions", [])
+        self._data_root = result.get("data_root")
+        self._session_context_id = result.get("context_id")
+        self._pending_session_id = (
+            sessions[0].get("session_id") if sessions else None
+        )
+        if self._pending_session_id:
+            detail = "发现上次会话，请选择继续或新建会话。"
+            self.ContinueSessionButton.IsEnabled = True
+        else:
+            detail = "当前文档没有上次会话，请选择新建会话。"
+            self.ContinueSessionButton.IsEnabled = False
+        self.NewSessionButton.IsEnabled = True
+        self.SendButton.IsEnabled = False
+        self._set_session_status(self._session_detail(detail))
+        self._set_status("等待选择", "选择前不会恢复、写记录或重放旧操作")
+
+    def _choose_session(self, choice, session_id):
+        context = (
+            self._session_request_version,
+            self._session_project_directory,
+            self._session_document_fingerprint,
+            self._session_context_id,
+        )
+        self._set_busy(True)
+        self.ContinueSessionButton.IsEnabled = False
+        self.NewSessionButton.IsEnabled = False
+        self._set_status("会话处理中", "正在应用你的明确选择…")
+
+        def choose():
+            try:
+                result = self._client.choose_session(
+                    context[1],
+                    context[2],
+                    context[3],
+                    self._panel_instance_id,
+                    context[0],
+                    choice,
+                    session_id,
+                )
+            except AgentConnectionError as exc:
+                message = str(exc)
+                self._dispatch(
+                    lambda text=message, version=context[0]: self._session_failed(
+                        text, version
+                    )
+                )
+                return
+            detail = (
+                "已继续上次会话，等待你的新操作。"
+                if choice == "continue"
+                else "新会话已建立，等待你的操作。"
+            )
+            self._dispatch(
+                lambda payload=result, text=detail, expected=context: self._activate_session(
+                    payload, text, expected
+                )
+            )
+
+        self._run_background(choose)
+
+    def _activate_session(self, result, detail, expected_context):
+        if (
+            expected_context[0] != self._session_request_version
+            or expected_context[2] != self._session_document_fingerprint
+        ):
+            return
+        self._session_id = result.get("active_session_id")
+        self._session_context_id = result.get("context_id")
+        self._data_root = result.get("data_root") or self._data_root
+        self._pending_session_id = None
+        self.ContinueSessionButton.IsEnabled = False
+        self.NewSessionButton.IsEnabled = False
+        self._set_session_status(self._session_detail(detail))
+        self._set_busy(False)
+        self._set_status("已连接", "当前文档会话已就绪")
+
+    def _pause_session_for_document_change(self, after_revoke=None):
+        next_version = self._session_request_version + 1
+        context_id = self._session_context_id
+        self._session_request_version = next_version
+        self._session_id = None
+        self._session_context_id = None
+        self._pending_session_id = None
+        self._session_project_directory = None
+        self._session_document_fingerprint = None
+        self._data_root = None
+        self.SendButton.IsEnabled = False
+        self.ContinueSessionButton.IsEnabled = False
+        self.NewSessionButton.IsEnabled = False
+        self._set_session_status("文档已切换；旧会话已暂停，正在读取新文档")
+        if context_id is not None:
+            if after_revoke is None:
+                self._revoke_session(next_version, context_id)
+            else:
+                self._pending_session_revoke = (
+                    next_version,
+                    context_id,
+                    after_revoke,
+                )
+                self._run_background(
+                    lambda: self._revoke_then_continue(
+                        next_version, context_id, after_revoke
+                    )
+                )
+        elif after_revoke is not None:
+            after_revoke()
+
+    def _revoke_then_continue(self, generation, context_id, callback):
+        if not self._revoke_session(generation, context_id):
+            self._dispatch(
+                lambda: self._session_revoke_failed(generation)
+            )
+            return
+        self._dispatch(
+            lambda: self._continue_after_revoke(generation, callback)
+        )
+
+    def _continue_after_revoke(self, generation, callback):
+        if generation == self._session_request_version:
+            self._pending_session_revoke = None
+            callback()
+
+    def _session_revoke_failed(self, generation):
+        if generation != self._session_request_version:
+            return
+        self.SendButton.IsEnabled = False
+        self.ContinueSessionButton.IsEnabled = False
+        self.NewSessionButton.IsEnabled = False
+        self.RefreshDocumentButton.IsEnabled = True
+        self._set_session_status(
+            "旧会话撤销失败；保持暂停。请点击“验证文档”重试"
+        )
+        self._set_status(
+            "切换暂停",
+            "未确认旧会话已撤销，不会验证或打开新文档会话。",
+        )
+
+    def _revoke_session(self, generation, context_id):
+        try:
+            self._client.revoke_session(
+                self._panel_instance_id, generation, context_id
+            )
+            return True
+        except AgentConnectionError:
+            return False
+
+    def _session_failed(self, message, request_version):
+        if request_version != self._session_request_version:
+            return
+        self._session_id = None
+        self.SendButton.IsEnabled = False
+        self.NewSessionButton.IsEnabled = True
+        self._set_session_status("会话不可用：{}".format(message))
+        self._set_status("会话失败", message)
+
+    def _session_context(self):
+        if (
+            self._session_id is None
+            or self._session_project_directory is None
+            or self._session_document_fingerprint is None
+            or self._session_context_id is None
+        ):
+            return None
+        return (
+            self._session_request_version,
+            self._session_project_directory,
+            self._session_document_fingerprint,
+            self._session_context_id,
+            self._session_id,
+        )
+
+    def _session_is_current(self, context):
+        return context == self._session_context()
+
+    def _session_detail(self, detail):
+        if self._data_root:
+            return "{}\n数据目录：{}".format(detail, self._data_root)
+        return detail
+
+    def _set_session_status(self, detail):
+        self.SessionState.Text = detail
 
     def _dispatch(self, callback):
         self.Dispatcher.BeginInvoke(Action(callback))

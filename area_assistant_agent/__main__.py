@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+from pathlib import Path
 import sys
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -9,6 +10,7 @@ from . import CONTRACT_VERSION, SERVICE_NAME
 from .binding_state_store import BindingStateStore
 from .config import AgentConfig
 from .document_status_runtime import resolve_document_status
+from .persistence import SessionRepository
 from .rvt_mcp_gateway import McpStdioClient
 from .server import create_server
 
@@ -105,12 +107,27 @@ def main():
         action="store_true",
         help="read a pyRevit snapshot from stdin and verify it through rvt-mcp",
     )
+    actions.add_argument(
+        "--show-data-root",
+        metavar="PROJECT_DIRECTORY",
+        help="print the resolved external data directory and exit",
+    )
     args = parser.parse_args()
     if args.check:
         print(json.dumps(readiness_payload(), ensure_ascii=False, sort_keys=True))
         return 0
     if args.serve:
         serve()
+        return 0
+    if args.show_data_root:
+        repository = SessionRepository(Path(args.show_data_root))
+        print(
+            json.dumps(
+                {"data_root": str(repository.data_root)},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
         return 0
     return document_status()
 
