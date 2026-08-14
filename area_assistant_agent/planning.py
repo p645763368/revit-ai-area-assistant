@@ -249,6 +249,7 @@ class PlanningAgent:
                             ],
                         }
                     )
+                    image_data_urls = []
                     for call in calls:
                         name = call.get("name")
                         arguments = call.get("arguments")
@@ -266,11 +267,13 @@ class PlanningAgent:
                             "content": json.dumps(execution.model_output, ensure_ascii=False),
                         })
                         if execution.image_data_url:
-                            messages.append({
+                            image_data_urls.append(execution.image_data_url)
+                    for image_data_url in image_data_urls:
+                        messages.append({
                                 "role": "user",
                                 "content": [
                                     {"type": "text", "text": "Inspect this captured Revit view as supporting evidence."},
-                                    {"type": "image_url", "image_url": {"url": execution.image_data_url}},
+                                    {"type": "image_url", "image_url": {"url": image_data_url}},
                                 ],
                             })
                     continue

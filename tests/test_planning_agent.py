@@ -116,6 +116,38 @@ class PlanningAgentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "read-only"):
             tools.execute("inspect_revit_model", {"query": "delete"})
 
+    def test_parallel_tool_results_precede_visual_follow_up_message(self):
+        final = json.dumps(
+            {
+                "summary": "证据已读取。",
+                "question": "选择哪个来源？",
+                "options": [
+                    {"id": "a", "label": "A", "recommended": True, "rationale": "r", "impact": "i"},
+                    {"id": "b", "label": "B", "recommended": False, "rationale": "r", "impact": "i"},
+                ],
+            }
+        )
+        model = _ScriptedModel(
+            [
+                {
+                    "content": None,
+                    "tool_calls": [
+                        {"id": "image", "name": "capture_revit_view", "arguments": {}},
+                        {"id": "read", "name": "inspect_revit_model", "arguments": {"query": "overview"}},
+                    ],
+                },
+                {"content": final, "tool_calls": []},
+            ]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            PlanningAgent(model, KnowledgeCatalog(ROOT / "knowledge"), _McpClient).plan(
+                [{"role": "user", "content": "scan"}], Path(directory),
+                lambda *args: None,
+            )
+
+        roles = [message["role"] for message in model.requests[1][0][-4:]]
+        self.assertEqual(roles, ["assistant", "tool", "tool", "user"])
+
     def test_structured_result_requires_two_to_four_options_and_one_recommendation(self):
         invalid = {
             "summary": "invalid",
