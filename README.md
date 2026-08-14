@@ -9,10 +9,11 @@
 - [PR #17 / Issue #5 剩余人工验收操作手册](docs/Issue-5-PR17-剩余人工验收操作手册.md)
 - [PR #17 / Issue #5 人工验收记录（2026-08-14）](docs/Issue-5-PR17-人工验收记录-2026-08-14.md)
 - [Issue #5 人工测试记录（2026-08-13）](docs/Issue-5-人工测试记录-2026-08-13.md)
+- [Issue #7 Revit 2026 人工测试手册](docs/issue-7-revit-manual-test.md)
 - [产品与技术规格 Issue #1](https://github.com/p645763368/revit-ai-area-assistant/issues/1)
 - [全部开发任务](https://github.com/p645763368/revit-ai-area-assistant/issues)
 
-工程骨架 [Issue #2](https://github.com/p645763368/revit-ai-area-assistant/issues/2) 已完成。当前波次的 [Issue #3](https://github.com/p645763368/revit-ai-area-assistant/issues/3)、[#4](https://github.com/p645763368/revit-ai-area-assistant/issues/4) 和 [#5](https://github.com/p645763368/revit-ai-area-assistant/issues/5) 可以在独立worktree中并行开发。
+工程骨架 [Issue #2](https://github.com/p645763368/revit-ai-area-assistant/issues/2) 以及 Issue #7 的阻塞项 [#3](https://github.com/p645763368/revit-ai-area-assistant/issues/3)、[#4](https://github.com/p645763368/revit-ai-area-assistant/issues/4)、[#5](https://github.com/p645763368/revit-ai-area-assistant/issues/5) 已合并到 `main`。
 
 > 安全提醒：禁止向GitHub提交RVT文件、API密钥、项目截图、运行日志或真实项目数据。
 
@@ -103,6 +104,10 @@ Revit 2026人工验收步骤见[`docs/issue-4-revit-manual-test.md`](docs/issue-
 ## 共享契约
 
 公共契约说明见[`contracts/README.md`](contracts/README.md)。后续并行任务必须复用`contracts/v1`信封；任何不兼容变化都需要新主版本并在PR中说明影响。
+
+Issue #7 在不改变 v1 信封的前提下新增兼容 action `analysis.plan`。面板的“扫描与方案”按钮会在当前已验证文档和已激活会话内启动只读规划：Agent 加载 `knowledge/rules` 与 `knowledge/cases` 中带版本、来源和适用范围的快照，自主选择固定只读模型查询，并在需要时调用 rvt-mcp `capture_view_image`。截图只保存在忽略的当前会话数据目录，作为视觉辅助；边界判断仍须由结构化 Revit 几何复核。
+
+规划结果固定返回 2 至 4 个可点击选项，恰好一个推荐项，每项显示依据和影响。用户既可点击选项，也可在原输入框自由说明；两者都会通过同一文档会话的历史继续规划。该功能不创建 Transaction、不修改模型、不自动保存 RVT。真实模型 API 与 Revit 2026 验收步骤见 [`docs/issue-7-revit-manual-test.md`](docs/issue-7-revit-manual-test.md)。
 
 ## 本地数据和凭据
 

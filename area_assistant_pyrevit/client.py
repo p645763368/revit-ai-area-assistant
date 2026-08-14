@@ -74,6 +74,32 @@ def _valid_session_payload(action, payload):
         )
     if action == "session.revoke":
         return set(payload) == {"revoked"} and payload.get("revoked") is True
+    if action == "analysis.plan":
+        if (
+            set(payload) != {"summary", "question", "options"}
+            or not _nonempty_string(payload.get("summary"))
+            or not _nonempty_string(payload.get("question"))
+            or not isinstance(payload.get("options"), list)
+            or not 2 <= len(payload["options"]) <= 4
+        ):
+            return False
+        recommended = 0
+        identifiers = set()
+        for option in payload["options"]:
+            if (
+                not isinstance(option, dict)
+                or set(option)
+                != {"id", "label", "recommended", "rationale", "impact"}
+                or not all(
+                    _nonempty_string(option.get(key))
+                    for key in ("id", "label", "rationale", "impact")
+                )
+                or not isinstance(option.get("recommended"), bool)
+            ):
+                return False
+            identifiers.add(option["id"])
+            recommended += int(option["recommended"])
+        return len(identifiers) == len(payload["options"]) and recommended == 1
     return False
 
 
@@ -296,6 +322,30 @@ class AgentClient:
                 "context_id": context_id,
                 "generation": generation,
                 "panel_instance_id": panel_instance_id,
+            },
+        )
+
+    def create_plan(
+        self,
+        project_directory,
+        document_fingerprint,
+        context_id,
+        panel_instance_id,
+        generation,
+        session_id,
+        message,
+    ):
+        return self._post_session_json(
+            "/v1/plans",
+            "analysis.plan",
+            {
+                "context_id": context_id,
+                "document_fingerprint": document_fingerprint,
+                "generation": generation,
+                "message": message,
+                "panel_instance_id": panel_instance_id,
+                "project_directory": project_directory,
+                "session_id": session_id,
             },
         )
 

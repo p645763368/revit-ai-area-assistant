@@ -31,6 +31,25 @@ class _FakeAgentHandler(BaseHTTPRequestHandler):
         request = json.loads(self.rfile.read(length))
         self.server.request_payload = request
         self.server.requests.append((self.path, request))
+        if self.path == "/v1/plans":
+            payload = {
+                "summary": "已扫描",
+                "question": "采用哪个来源？",
+                "options": [
+                    {"id": "floor", "label": "楼板", "recommended": True, "rationale": "完整", "impact": "继续核对"},
+                    {"id": "wall", "label": "墙体", "recommended": False, "rationale": "备选", "impact": "检查连接"},
+                ],
+            }
+            body = json.dumps({
+                "contract_version": "1.0", "message_type": "response",
+                "request_id": request["request_id"], "status": "completed", "payload": payload,
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.startswith("/v1/sessions/"):
             payload_request = request["payload"]
             if self.path.endswith("/open"):
@@ -221,6 +240,18 @@ class PyRevitAgentClientTests(unittest.TestCase):
         for _, request in self.server.requests:
             self.assertEqual(request["contract_version"], "1.0")
             self.assertEqual(request["message_type"], "request")
+
+    def test_panel_client_requests_a_structured_plan_in_the_current_session(self):
+        result = self.client.create_plan(
+            "C:\\test", "document-a", "context-a", "panel-a", 1,
+            "session-a", "扫描当前模型",
+        )
+
+        self.assertEqual(result["question"], "采用哪个来源？")
+        self.assertTrue(result["options"][0]["recommended"])
+        request = self.server.requests[-1][1]
+        self.assertEqual(request["action"], "analysis.plan")
+        self.assertEqual(request["payload"]["session_id"], "session-a")
 
     def test_panel_client_rejects_malformed_session_action_payloads(self):
         cases = (

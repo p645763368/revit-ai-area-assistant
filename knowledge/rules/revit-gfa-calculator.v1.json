@@ -1,0 +1,13 @@
+{
+  "name": "Revit_GFA_Calculator",
+  "version": "1.0.0",
+  "provenance": "Reviewed and anonymized snapshot derived from the validated Revit GFA workflow referenced by product specification Issue #1.",
+  "applicability": "Revit 2026 demo planning for Area Scheme, Area Plan, boundary-source comparison, Area placement, tags and schedule QA. Project policy still requires user confirmation.",
+  "rules": [
+    "Area Plans do not create Area Boundary lines automatically.",
+    "Use exact Revit geometry to validate a boundary; never substitute a bounding box for a footprint.",
+    "Keep geometric coverage evidence separate from regulatory or GFA policy decisions.",
+    "Place Areas and tags at points verified to be inside a valid closed circuit.",
+    "Treat user edits and confirmed project rules as higher priority than a new AI inference."
+  ]
+}

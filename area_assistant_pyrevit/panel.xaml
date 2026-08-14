@@ -7,6 +7,7 @@
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
@@ -38,9 +39,20 @@
         </StackPanel>
       </StackPanel>
     </Border>
+    <Border Grid.Row="3" Padding="10" Margin="0,0,0,10" Background="White" CornerRadius="4">
+      <StackPanel>
+        <TextBlock Text="AI结构化方案" FontWeight="SemiBold" />
+        <TextBlock x:Name="StructuredSummary" Text="点击“扫描与方案”后，AI会只读检查模型并按需截图。" TextWrapping="Wrap" Foreground="#FF555555" Margin="0,2,0,4" />
+        <TextBlock x:Name="StructuredQuestion" Text="尚无待确认方案" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,0,0,6" />
+        <Button x:Name="Option1Button" IsEnabled="False" HorizontalContentAlignment="Left" Margin="0,0,0,4" />
+        <Button x:Name="Option2Button" IsEnabled="False" HorizontalContentAlignment="Left" Margin="0,0,0,4" />
+        <Button x:Name="Option3Button" IsEnabled="False" HorizontalContentAlignment="Left" Margin="0,0,0,4" />
+        <Button x:Name="Option4Button" IsEnabled="False" HorizontalContentAlignment="Left" />
+      </StackPanel>
+    </Border>
     <TextBox
         x:Name="Transcript"
-        Grid.Row="3"
+        Grid.Row="4"
         IsReadOnly="True"
         AcceptsReturn="True"
         TextWrapping="Wrap"
@@ -49,14 +61,15 @@
         Background="White" />
     <TextBox
         x:Name="MessageInput"
-        Grid.Row="4"
+        Grid.Row="5"
         MinHeight="64"
         Margin="0,10,0,8"
         AcceptsReturn="True"
         TextWrapping="Wrap"
         VerticalScrollBarVisibility="Auto"
         ToolTip="输入给 AI 的消息" />
-    <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
+    <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
+      <Button x:Name="AnalyzeButton" Content="扫描与方案" IsEnabled="False" MinWidth="96" Margin="0,0,8,0" />
       <Button x:Name="RetryButton" Content="重试" IsEnabled="False" MinWidth="72" Margin="0,0,8,0" />
       <Button x:Name="SendButton" Content="发送" IsDefault="True" IsEnabled="False" MinWidth="88" />
     </StackPanel>

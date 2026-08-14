@@ -1,0 +1,12 @@
+{
+  "name": "anonymized-boundary-source-comparison",
+  "version": "1.0.0",
+  "provenance": "Anonymized conclusions from the validated area-calculation case referenced by product specification Issue #1; no conversation, screenshot, geometry or project identity is included.",
+  "applicability": "Use as reasoning guidance when walls, floors, roofs or existing boundaries disagree about an Area footprint.",
+  "observations": [
+    "A roof-level structural floor can be stronger evidence for the covered footprint than the floor element hosted on the target level.",
+    "Uncovered corridors, balconies and similar special regions require a project-specific confirmation instead of a fixed universal factor.",
+    "Screenshot observations must be checked against structured geometry before they influence an Area boundary proposal.",
+    "When evidence conflicts, present a small set of alternatives with the expected consequence of each choice."
+  ]
+}

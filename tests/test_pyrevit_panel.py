@@ -60,6 +60,21 @@ class _SessionClient:
         return {"revoked": True}
 
 
+class _PlanClient(_SessionClient):
+    def create_plan(
+        self, project, fingerprint, context, panel, generation, session, message
+    ):
+        self.calls.append(("plan", fingerprint, session, message))
+        return {
+            "summary": "已比较候选来源。",
+            "question": "采用哪个来源？",
+            "options": [
+                {"id": "floor", "label": "楼板", "recommended": True, "rationale": "轮廓完整", "impact": "继续精确核对"},
+                {"id": "wall", "label": "墙体", "recommended": False, "rationale": "可交叉验证", "impact": "检查墙连接"},
+            ],
+        }
+
+
 class _SwitchingClient:
     def __init__(self, panel):
         self.panel = panel
@@ -180,6 +195,39 @@ def _load_panel_module():
 
 
 class PyRevitPanelTests(unittest.TestCase):
+    def test_clickable_recommendation_continues_planning_in_current_session(self):
+        panel_module = _load_panel_module()
+        panel = panel_module.AiAreaAssistantPanel.__new__(panel_module.AiAreaAssistantPanel)
+        panel._client = _PlanClient()
+        panel._dispatch = lambda callback: callback()
+        panel._run_background = lambda callback: callback()
+        panel._session_request_version = 1
+        panel._panel_instance_id = "panel-a"
+        panel._session_project_directory = "C:\\test"
+        panel._session_document_fingerprint = "document-a"
+        panel._session_context_id = "context-a"
+        panel._session_id = "session-a"
+        panel._planning_active = True
+        panel._planning_options = []
+        for name in (
+            "Transcript", "SendButton", "RetryButton", "AnalyzeButton",
+            "ConnectionState", "ConnectionDetail", "StructuredSummary",
+            "StructuredQuestion", "Option1Button", "Option2Button",
+            "Option3Button", "Option4Button",
+        ):
+            setattr(panel, name, _Control())
+
+        panel._request_plan("扫描当前模型")
+        panel.option_1_click(None, None)
+
+        self.assertEqual(panel.StructuredQuestion.Text, "采用哪个来源？")
+        self.assertIn("★ 楼板", panel.Option1Button.Content)
+        self.assertEqual(
+            [call[3] for call in panel._client.calls if call[0] == "plan"],
+            ["扫描当前模型", "选择方案：楼板（floor）"],
+        )
+        self.assertIn("依据：轮廓完整", panel.Transcript.Text)
+
     def test_interrupted_reply_unblocks_panel_and_enables_retry(self):
         panel_module = _load_panel_module()
         panel = panel_module.AiAreaAssistantPanel.__new__(

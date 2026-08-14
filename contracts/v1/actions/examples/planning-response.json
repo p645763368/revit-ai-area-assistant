@@ -1,0 +1,26 @@
+{
+  "contract_version": "1.0",
+  "message_type": "response",
+  "request_id": "req-plan-example",
+  "status": "completed",
+  "payload": {
+    "summary": "结构化模型证据显示两个候选来源。",
+    "question": "本轮采用哪个来源继续精确核对？",
+    "options": [
+      {
+        "id": "floor",
+        "label": "采用楼板轮廓",
+        "recommended": true,
+        "rationale": "候选楼板轮廓完整，并与当前视图覆盖关系一致。",
+        "impact": "继续读取精确楼板几何并检查闭合。"
+      },
+      {
+        "id": "walls",
+        "label": "采用外墙中心线",
+        "recommended": false,
+        "rationale": "墙体可作为独立交叉证据。",
+        "impact": "需要额外检查墙连接和洞口。"
+      }
+    ]
+  }
+}
