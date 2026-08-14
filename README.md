@@ -5,6 +5,10 @@
 ## 从这里开始
 
 - [非专业开发人员双人Codex协同开发指南](docs/非专业开发人员双人Codex协同开发指南.md)
+- [Issue #5 外部状态、日志与会话恢复人工测试手册](docs/Issue-5-外部状态日志与会话恢复-人工测试手册.md)
+- [PR #17 / Issue #5 剩余人工验收操作手册](docs/Issue-5-PR17-剩余人工验收操作手册.md)
+- [PR #17 / Issue #5 人工验收记录（2026-08-14）](docs/Issue-5-PR17-人工验收记录-2026-08-14.md)
+- [Issue #5 人工测试记录（2026-08-13）](docs/Issue-5-人工测试记录-2026-08-13.md)
 - [产品与技术规格 Issue #1](https://github.com/p645763368/revit-ai-area-assistant/issues/1)
 - [全部开发任务](https://github.com/p645763368/revit-ai-area-assistant/issues)
 
@@ -103,4 +107,26 @@ Revit 2026人工验收步骤见[`docs/issue-4-revit-manual-test.md`](docs/issue-
 ## 本地数据和凭据
 
 本仓库只保存代码、匿名示例和文档。`.gitignore`阻止常见RVT、凭据、日志、截图和`AI_Area_Assistant_Data`进入Git，但提交前仍必须人工检查暂存文件。真实API密钥只能通过用户级环境变量或安全凭据提供。
+
+Issue #5提供了外部会话持久化接口。数据根目录固定为项目目录下的`AI_Area_Assistant_Data`，并在运行时解析为绝对路径。可在仓库根目录查看当前项目解析后的路径：
+
+```powershell
+python -m area_assistant_agent --show-data-root .
+```
+
+输出示例为`{"data_root": "D:\\path\\to\\project\\AI_Area_Assistant_Data"}`。运行数据按文档指纹的SHA-256目录键隔离，结构如下：
+
+```text
+AI_Area_Assistant_Data/
+└── documents/<document-key>/sessions/<session-id>/
+    ├── state.json
+    ├── conversation.jsonl
+    ├── operations.jsonl
+    ├── agent.log.jsonl
+    └── session.md
+```
+
+`SessionRepository.recovery_prompt()`只列出当前文档可恢复且状态文件完整的会话；单个损坏的`state.json`会被隔离，不会阻断其他候选。正式Dockable Pane在文档验证后显示“继续上次会话”或“新建会话”，选择前不创建、恢复或写入任何会话。用户明确选择继续后，恢复状态为`awaiting_user_action`，不会重放旧的模型操作。对话内容以及工具输入、输出和错误写入记录前会递归遮蔽Authorization、API密钥、Token、Secret和Password字段。
+
+切换活动文档时，面板会立即撤销旧会话的发送和写入资格，重新读取当前文档指纹并要求用户为当前文档重新选择会话。面板和Agent通过`contracts/v1`版本化请求共同校验会话上下文；旧文档的迟到回复不能写入旧目录。本功能不读取、修改或保存RVT。
 

@@ -1,0 +1,1 @@
+{"contract_version":"1.0","message_type":"response","request_id":"session-choose-1","status":"completed","payload":{"active_session_id":"11111111-1111-4111-8111-111111111111","context_id":"context-anonymous","data_root":"C:\\anonymous-project\\AI_Area_Assistant_Data","status":"awaiting_user_action"}}
