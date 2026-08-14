@@ -45,7 +45,7 @@ var candidates = new List<object>();
 foreach (var element in modelElements.Concat(areaBoundaryLines).Take(500)) {
     var profileLoops = new List<object>();
     var host = element as HostObject;
-    if (host != null) {
+    if (host is Floor || host is RoofBase) {
         foreach (var reference in HostObjectUtils.GetTopFaces(host)) {
             var face = host.GetGeometryObjectFromReference(reference) as Face;
             if (face == null) continue;

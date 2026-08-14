@@ -125,6 +125,12 @@ class PlanningAgentTests(unittest.TestCase):
         self.assertIn("OST_AreaSchemeLines", code)
         self.assertNotIn("get_BoundingBox", code)
 
+    def test_boundary_candidates_only_request_top_faces_from_supported_hosts(self):
+        code = READ_ONLY_QUERIES["boundary_candidates"]
+
+        self.assertIn("host is Floor || host is RoofBase", code)
+        self.assertIn("HostObjectUtils.GetTopFaces(host)", code)
+
     def test_parallel_tool_results_precede_visual_follow_up_message(self):
         final = json.dumps(
             {
