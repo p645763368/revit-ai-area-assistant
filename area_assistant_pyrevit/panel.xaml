@@ -7,6 +7,7 @@
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
@@ -38,9 +39,22 @@
         </StackPanel>
       </StackPanel>
     </Border>
+    <Border Grid.Row="3" Padding="10" Margin="0,0,0,10" Background="White" CornerRadius="4">
+      <StackPanel>
+        <TextBlock Text="边界来源选择" FontWeight="SemiBold" />
+        <TextBlock x:Name="SelectionState" Text="未选择" Foreground="#FF1F6FEB" FontSize="16" />
+        <TextBox x:Name="SelectionDetail" Text="请选择Floor、Roof或Wall作为边界来源" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Foreground="#FF555555" MaxHeight="130" Background="Transparent" BorderThickness="0" Padding="0" />
+        <WrapPanel Margin="0,8,0,0">
+          <Button x:Name="ReadSelectionButton" Content="读取当前选择" MinWidth="92" Margin="0,0,6,6" />
+          <Button x:Name="PickSelectionButton" Content="交互式选择" MinWidth="92" Margin="0,0,6,6" />
+          <Button x:Name="HighlightSelectionButton" Content="定位高亮" IsEnabled="False" MinWidth="76" Margin="0,0,6,6" />
+          <Button x:Name="AnalyzeSelectionButton" Content="交给Agent分析" IsEnabled="False" MinWidth="104" Margin="0,0,0,6" />
+        </WrapPanel>
+      </StackPanel>
+    </Border>
     <TextBox
         x:Name="Transcript"
-        Grid.Row="3"
+        Grid.Row="4"
         IsReadOnly="True"
         AcceptsReturn="True"
         TextWrapping="Wrap"
@@ -49,14 +63,14 @@
         Background="White" />
     <TextBox
         x:Name="MessageInput"
-        Grid.Row="4"
+        Grid.Row="5"
         MinHeight="64"
         Margin="0,10,0,8"
         AcceptsReturn="True"
         TextWrapping="Wrap"
         VerticalScrollBarVisibility="Auto"
         ToolTip="输入给 AI 的消息" />
-    <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
+    <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
       <Button x:Name="RetryButton" Content="重试" IsEnabled="False" MinWidth="72" Margin="0,0,8,0" />
       <Button x:Name="SendButton" Content="发送" IsDefault="True" IsEnabled="False" MinWidth="88" />
     </StackPanel>

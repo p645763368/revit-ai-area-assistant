@@ -15,6 +15,7 @@ from . import PANEL_ID
 from .client import AgentClient, AgentConnectionError, ensure_agent_available
 from .document_status import collect_document_status
 from .process import start_agent_process
+from .selection import create_selection_executor, format_selection_summary, summarize_elements
 
 
 _PACKAGE_ROOT = os.path.dirname(__file__)
@@ -36,6 +37,12 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._document_pause_reason = None
         self._bound_document_fingerprint = None
         self._document_request_version = 0
+        self._selected_elements = []
+        self._selected_summaries = []
+        self._selection_document = None
+        self._selection_executor = create_selection_executor(
+            self._selection_event_completed
+        )
         self._session_request_version = 0
         self._panel_instance_id = uuid.uuid4().hex
         self._session_id = None
@@ -50,10 +57,15 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self.RefreshDocumentButton.Click += self.refresh_document_click
         self.ContinueSessionButton.Click += self.continue_session_click
         self.NewSessionButton.Click += self.new_session_click
+        self.ReadSelectionButton.Click += self.read_selection_click
+        self.PickSelectionButton.Click += self.pick_selection_click
+        self.HighlightSelectionButton.Click += self.highlight_selection_click
+        self.AnalyzeSelectionButton.Click += self.analyze_selection_click
         self._subscribe_document_changes()
         self._set_busy(True)
         self._set_status("连接中", "正在连接本地 Agent…")
         self._set_document_status("待验证", "打开文档后点击“验证文档”")
+        self._set_selection_status("未选择", "请选择Floor、Roof或Wall作为边界来源")
         self._set_session_status("等待文档验证")
         self._run_background(self._connect)
 
@@ -174,19 +186,25 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self.RefreshDocumentButton.IsEnabled = True
 
     def _on_view_activated(self, sender, event_args):
+        active_document = event_args.CurrentActiveView.Document
         snapshot = collect_document_status(
-            event_args.CurrentActiveView.Document,
+            active_document,
             os.environ.get("AI_AREA_ASSISTANT_TEST_DOCUMENT", ""),
         )
         if getattr(self, "_pending_session_revoke", None) is not None:
             return
+        if (
+            getattr(self, "_selection_document", None) is not None
+            and not self._selection_document.Equals(active_document)
+        ):
+            self._clear_selection("文档已切换，请重新选择来源元素")
         if (
             self._bound_document_fingerprint is not None
             and snapshot["document_fingerprint"] != self._bound_document_fingerprint
         ):
             self._document_pause_reason = "document_changed"
         if (
-            self._session_document_fingerprint is not None
+            getattr(self, "_session_document_fingerprint", None) is not None
             and snapshot["document_fingerprint"]
             != self._session_document_fingerprint
         ):
@@ -195,6 +213,75 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             )
             return
         self._start_document_snapshot_verification(snapshot)
+
+    def read_selection_click(self, sender, args):
+        self._set_selection_status("读取中", "正在读取Revit当前选择集…")
+        self._request_selection_operation("current")
+
+    def pick_selection_click(self, sender, args):
+        self._set_selection_status("选择中", "请在Revit中选择Floor、Roof或Wall")
+        self._request_selection_operation("interactive")
+
+    def highlight_selection_click(self, sender, args):
+        if not self._selected_elements:
+            self._set_selection_status("未选择", "请先读取或交互选择来源元素")
+            return
+        self._set_selection_status("定位中", "正在Revit中定位所选元素…")
+        self._request_selection_operation("highlight", self._selected_elements)
+
+    def _request_selection_operation(self, action, elements=None):
+        try:
+            self._selection_executor.request(action, elements)
+        except Exception as exc:
+            self._set_selection_status("操作失败", str(exc))
+
+    def _selection_event_completed(self, outcome, elements, rejected_count, error):
+        if outcome == "selected":
+            self._update_selection(elements, rejected_count)
+        elif outcome == "highlighted":
+            self._set_selection_status(
+                "已定位 {} 个".format(len(elements)),
+                format_selection_summary(self._selected_summaries),
+            )
+        elif outcome == "cancelled":
+            self._set_selection_status("已取消选择", "保留上一次有效选择")
+        else:
+            self._set_selection_status("操作失败", error or "未知选择错误")
+
+    def analyze_selection_click(self, sender, args):
+        if not self._selected_summaries:
+            self._set_selection_status("未选择", "请先读取或交互选择来源元素")
+            return
+        self._send(
+            "请分析以下Revit边界来源元素。不要执行模型写入；如证据不足，请先提问。\n{}".format(
+                format_selection_summary(self._selected_summaries)
+            )
+        )
+
+    def _update_selection(self, elements, rejected_count):
+        self._selected_elements = list(elements)
+        self._selection_document = (
+            self._selected_elements[0].Document if self._selected_elements else None
+        )
+        self._selected_summaries = summarize_elements(self._selected_elements)
+        count = len(self._selected_elements)
+        self.HighlightSelectionButton.IsEnabled = count > 0
+        self.AnalyzeSelectionButton.IsEnabled = count > 0
+        if count == 0:
+            detail = "当前选择中没有Floor、Roof或Wall"
+        else:
+            detail = format_selection_summary(self._selected_summaries)
+        if rejected_count:
+            detail += "\n已忽略 {} 个不支持类别的元素".format(rejected_count)
+        self._set_selection_status("已选择 {} 个".format(count), detail)
+
+    def _clear_selection(self, detail):
+        self._selected_elements = []
+        self._selected_summaries = []
+        self._selection_document = None
+        self.HighlightSelectionButton.IsEnabled = False
+        self.AnalyzeSelectionButton.IsEnabled = False
+        self._set_selection_status("未选择", detail)
 
     def _subscribe_document_changes(self):
         try:
@@ -327,6 +414,10 @@ class AiAreaAssistantPanel(forms.WPFPanel):
     def _set_document_status(self, state, detail):
         self.DocumentState.Text = state
         self.DocumentDetail.Text = detail
+
+    def _set_selection_status(self, state, detail):
+        self.SelectionState.Text = state
+        self.SelectionDetail.Text = detail
 
     def _start_session_for_snapshot(self, snapshot):
         fingerprint = snapshot.get("document_fingerprint")
