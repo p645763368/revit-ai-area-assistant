@@ -768,6 +768,26 @@ class PyRevitPanelTests(unittest.TestCase):
         self.assertFalse(panel.AnalyzeSelectionButton.IsEnabled)
         self.assertEqual(panel.SelectionState.Text, "未选择")
 
+    def test_busy_planning_disables_selected_element_agent_handoff(self):
+        panel_module = _load_panel_module()
+        panel = panel_module.AiAreaAssistantPanel.__new__(
+            panel_module.AiAreaAssistantPanel
+        )
+        panel._session_id = "session-a"
+        panel._selected_elements = [object()]
+        panel.SendButton = _Control()
+        panel.RetryButton = _Control()
+        panel.AnalyzeButton = _Control()
+        panel.AnalyzeSelectionButton = _Control()
+
+        panel._set_busy(False)
+        self.assertTrue(panel.AnalyzeSelectionButton.IsEnabled)
+
+        panel._set_busy(True)
+        self.assertFalse(panel.SendButton.IsEnabled)
+        self.assertFalse(panel.AnalyzeButton.IsEnabled)
+        self.assertFalse(panel.AnalyzeSelectionButton.IsEnabled)
+
 
 if __name__ == "__main__":
     unittest.main()

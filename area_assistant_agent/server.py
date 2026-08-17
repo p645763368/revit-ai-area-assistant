@@ -373,19 +373,36 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                             error=error,
                         )
 
+                def require_planning_context_locked():
+                    self._require_current_session_context(
+                        request, repository, active_session_id=session_id
+                    )
+                    binding = self.server.current_document_status
+                    if (
+                        not isinstance(binding, dict)
+                        or binding.get("binding_status") != "bound"
+                        or binding.get("rvt_mcp_status") != "verified"
+                        or binding.get("document_fingerprint") != document_fingerprint
+                    ):
+                        raise ValueError("planning document context is no longer current")
+
                 def guard_planning_context():
                     with self.server.session_lock:
-                        self._require_current_session_context(
-                            request, repository, active_session_id=session_id
-                        )
-                        binding = self.server.current_document_status
-                        if (
-                            not isinstance(binding, dict)
-                            or binding.get("binding_status") != "bound"
-                            or binding.get("rvt_mcp_status") != "verified"
-                            or binding.get("document_fingerprint") != document_fingerprint
-                        ):
-                            raise ValueError("planning document context is no longer current")
+                        require_planning_context_locked()
+
+                screenshot_directory = (session_directory / "screenshots").resolve()
+
+                def commit_screenshot(stable_path, image_bytes):
+                    candidate = Path(stable_path).resolve()
+                    if (
+                        candidate.parent != screenshot_directory
+                        or candidate.suffix.lower() != ".png"
+                    ):
+                        raise ValueError("planning screenshot destination is invalid")
+                    with self.server.session_lock:
+                        require_planning_context_locked()
+                        screenshot_directory.mkdir(parents=True, exist_ok=True)
+                        candidate.write_bytes(image_bytes)
 
                 result = self.server.planning_agent.plan(
                     conversation,
@@ -393,6 +410,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                     audit,
                     document_fingerprint=document_fingerprint,
                     session_guard=guard_planning_context,
+                    screenshot_commit=commit_screenshot,
                 )
                 payload = result.as_dict()
                 with self.server.session_lock:

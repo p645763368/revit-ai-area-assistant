@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import unittest
 
@@ -27,6 +28,27 @@ class _PlanningAgent:
                 ],
             }
         )
+
+
+class _CaptureAfterFencePlanningAgent:
+    def __init__(self):
+        self.postcheck_passed = threading.Event()
+        self.allow_commit = threading.Event()
+
+    def plan(self, conversation, session_directory, audit, **kwargs):
+        kwargs["session_guard"]()
+        self.postcheck_passed.set()
+        if not self.allow_commit.wait(2):
+            raise RuntimeError("test did not release screenshot commit")
+        stable_path = Path(session_directory) / "screenshots" / "late.png"
+        kwargs["screenshot_commit"](stable_path, b"late screenshot")
+        audit(
+            "capture_revit_view",
+            {},
+            {"saved_path": str(stable_path)},
+            None,
+        )
+        raise AssertionError("revoked planning task committed stale output")
 
 
 class AgentPlanningApiTests(unittest.TestCase):
@@ -76,6 +98,64 @@ class AgentPlanningApiTests(unittest.TestCase):
             self.assertIn("选择：楼板", second_history[-1]["content"])
             operations = next(Path(project_directory).glob("AI_Area_Assistant_Data/documents/*/sessions/*/operations.jsonl"))
             self.assertEqual(len(operations.read_text(encoding="utf-8").splitlines()), 2)
+
+    def test_revoke_after_screenshot_postcheck_blocks_file_and_audit_commit(self):
+        with tempfile.TemporaryDirectory() as project_directory:
+            opened = self._post("/v1/sessions/open", "session.open", {
+                "document_fingerprint": "document-a", "generation": 1,
+                "panel_instance_id": "panel-a", "project_directory": project_directory,
+            })
+            chosen = self._post("/v1/sessions/choose", "session.choose", {
+                "choice": "new", "context_id": opened["context_id"],
+                "document_fingerprint": "document-a", "generation": 1,
+                "panel_instance_id": "panel-a", "project_directory": project_directory,
+                "session_id": None,
+            })
+            common = {
+                "context_id": chosen["context_id"],
+                "document_fingerprint": "document-a",
+                "generation": 1,
+                "panel_instance_id": "panel-a",
+                "project_directory": project_directory,
+                "session_id": chosen["active_session_id"],
+            }
+            blocking = _CaptureAfterFencePlanningAgent()
+            self.server.planning_agent = blocking
+            outcomes = []
+
+            def request_plan():
+                try:
+                    self._post(
+                        "/v1/plans", "analysis.plan",
+                        dict(common, message="capture then pause"),
+                    )
+                except HTTPError as error:
+                    outcomes.append(error.code)
+
+            worker = threading.Thread(target=request_plan)
+            worker.start()
+            self.assertTrue(blocking.postcheck_passed.wait(1))
+            session_directory = next(
+                Path(project_directory).glob(
+                    "AI_Area_Assistant_Data/documents/*/sessions/*"
+                )
+            )
+            operations = session_directory / "operations.jsonl"
+            before_operations = operations.read_bytes() if operations.exists() else b""
+
+            self._post("/v1/sessions/revoke", "session.revoke", {
+                "context_id": chosen["context_id"],
+                "generation": 2,
+                "panel_instance_id": "panel-a",
+            })
+            blocking.allow_commit.set()
+            worker.join(2)
+
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(outcomes, [400])
+            self.assertEqual(list((session_directory / "screenshots").glob("*")), [])
+            after_operations = operations.read_bytes() if operations.exists() else b""
+            self.assertEqual(after_operations, before_operations)
 
     def _post(self, path, action, payload):
         request_id = "req-" + action

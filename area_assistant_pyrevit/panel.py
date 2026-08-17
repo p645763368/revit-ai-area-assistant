@@ -534,6 +534,12 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self.SendButton.IsEnabled = not busy and session_ready
         if hasattr(self, "AnalyzeButton"):
             self.AnalyzeButton.IsEnabled = not busy and session_ready
+        if hasattr(self, "AnalyzeSelectionButton"):
+            self.AnalyzeSelectionButton.IsEnabled = (
+                not busy
+                and session_ready
+                and bool(getattr(self, "_selected_elements", []))
+            )
         if busy:
             self.RetryButton.IsEnabled = False
 

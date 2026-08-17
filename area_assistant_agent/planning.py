@@ -176,11 +176,13 @@ class ReadOnlyRevitTools:
         capture_directory: Path,
         expected_document_fingerprint: Optional[str] = None,
         session_guard: Optional[Callable[[], None]] = None,
+        screenshot_commit: Optional[Callable[[Path, bytes], None]] = None,
     ):
         self.client = client
         self.capture_directory = Path(capture_directory)
         self.expected_document_fingerprint = expected_document_fingerprint
         self.session_guard = session_guard or (lambda: None)
+        self.screenshot_commit = screenshot_commit or self._commit_screenshot
 
     def execute(self, name: str, arguments: dict) -> ToolExecution:
         if name == "inspect_revit_model":
@@ -202,7 +204,6 @@ class ReadOnlyRevitTools:
             if view_id is not None and (not isinstance(view_id, int) or isinstance(view_id, bool)):
                 raise ValueError("read-only screenshot view id is invalid")
             self._guard_current_document()
-            self.capture_directory.mkdir(parents=True, exist_ok=True)
             filename = "view-{}.png".format(uuid.uuid4().hex)
             stable_path = self.capture_directory / filename
             temporary_directory = Path(tempfile.gettempdir()) / "RevitAIAreaAssistant"
@@ -219,12 +220,16 @@ class ReadOnlyRevitTools:
                     raise RuntimeError("rvt-mcp screenshot path escaped its staging file")
                 image_bytes = saved_path.read_bytes()
                 self._guard_current_document()
-                stable_path.write_bytes(image_bytes)
+                self.screenshot_commit(stable_path, image_bytes)
             finally:
                 try:
                     output_path.unlink()
-                except OSError:
+                except FileNotFoundError:
                     pass
+                except OSError as error:
+                    raise RuntimeError(
+                        "rvt-mcp screenshot staging file could not be removed"
+                    ) from error
             if not stable_path.is_file():
                 raise RuntimeError("rvt-mcp screenshot could not be retained")
             audit = {"view_id": result.get("view_id", view_id), "saved_path": str(stable_path)}
@@ -245,6 +250,11 @@ class ReadOnlyRevitTools:
             raise RuntimeError("rvt-mcp current document changed during planning")
         self.session_guard()
 
+    def _commit_screenshot(self, stable_path: Path, image_bytes: bytes) -> None:
+        self.session_guard()
+        self.capture_directory.mkdir(parents=True, exist_ok=True)
+        stable_path.write_bytes(image_bytes)
+
 
 class PlanningAgent:
     def __init__(self, model_client: Any, knowledge: KnowledgeCatalog, mcp_client_factory: Callable[[], Any], max_turns: int = 6):
@@ -260,6 +270,7 @@ class PlanningAgent:
         audit: Callable[[str, dict, Any, Optional[str]], None],
         document_fingerprint: Optional[str] = None,
         session_guard: Optional[Callable[[], None]] = None,
+        screenshot_commit: Optional[Callable[[Path, bytes], None]] = None,
     ) -> PlanningResult:
         knowledge = self.knowledge.load()
         messages = [{
@@ -280,6 +291,7 @@ class PlanningAgent:
                 Path(session_directory) / "screenshots",
                 expected_document_fingerprint=document_fingerprint,
                 session_guard=session_guard,
+                screenshot_commit=screenshot_commit,
             )
             for _ in range(self.max_turns):
                 turn = self.model_client.planning_turn(messages, TOOL_DEFINITIONS)

@@ -37,7 +37,7 @@ python -m area_assistant_agent --check
 python -m unittest discover -s tests -v
 ```
 
-Agent就绪检查应输出`status: ready`和`contract_version: 1.0`；`--check`本身不会连接模型API。`--serve`只提供本机AI对话服务，不调用rvt-mcp，也不读写Revit。
+Agent就绪检查应输出`status: ready`和`contract_version: 1.0`；`--check`本身不会连接模型API。`--serve`提供本机AI对话、会话与只读规划服务；只有用户在已验证文档会话中明确启动规划时，规划服务才会调用rvt-mcp读取Revit或截取辅助证据，不执行Revit模型写入。
 
 启动Agent服务前，在用户级环境变量中配置：
 
