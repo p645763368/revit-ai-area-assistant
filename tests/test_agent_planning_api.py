@@ -14,7 +14,7 @@ class _PlanningAgent:
     def __init__(self):
         self.conversations = []
 
-    def plan(self, conversation, session_directory, audit):
+    def plan(self, conversation, session_directory, audit, **kwargs):
         self.conversations.append(conversation)
         audit("inspect_revit_model", {"query": "overview"}, {"areaCount": 0}, None)
         return PlanningResult.from_dict(

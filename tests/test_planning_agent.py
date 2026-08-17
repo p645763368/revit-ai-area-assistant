@@ -11,6 +11,8 @@ from area_assistant_agent.planning import (
     READ_ONLY_QUERIES,
     ReadOnlyRevitTools,
 )
+from area_assistant_agent.document_binding import document_fingerprint
+from area_assistant_agent.rvt_mcp_gateway import DOCUMENT_EVIDENCE_CODE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,10 +35,19 @@ class _McpClient:
     def call_tool(self, name, arguments):
         self.calls.append((name, arguments))
         if name == "revit_list_available_targets":
-            return {"count": 1, "targets": [{"year": 2026}]}
+            return {"count": 1, "targets": [{"year": 2026, "pid": 1234}]}
         if name == "revit_switch_target":
             return {"ok": True, "verified": True}
         if name == "revit_send_code_to_revit":
+            if arguments["code"] == DOCUMENT_EVIDENCE_CODE:
+                return {"executed": True, "result": {
+                    "documentTitle": "Development Copy",
+                    "documentPath": "C:\\Models\\Development Copy.rvt",
+                    "projectInformationId": "project-a",
+                    "isModified": False,
+                    "activeViewId": "42",
+                    "activeViewName": "Level 1",
+                }}
             return {"executed": True, "result": {"levels": [{"id": "12", "name": "一层"}]}}
         if name == "capture_view_image":
             Path(arguments["output_path"]).write_bytes(b"png")
@@ -95,7 +106,12 @@ class PlanningAgentTests(unittest.TestCase):
         self.assertEqual(len(result.options), 2)
         self.assertTrue(result.options[0]["recommended"])
         self.assertEqual([event[0] for event in events], ["inspect_revit_model", "capture_revit_view"])
-        self.assertEqual([call[0] for call in mcp.calls].count("revit_send_code_to_revit"), 1)
+        model_reads = [
+            call for call in mcp.calls
+            if call[0] == "revit_send_code_to_revit"
+            and call[1].get("code") != DOCUMENT_EVIDENCE_CODE
+        ]
+        self.assertEqual(len(model_reads), 1)
         self.assertEqual([call[0] for call in mcp.calls].count("capture_view_image"), 1)
         capture_call = next(call for call in mcp.calls if call[0] == "capture_view_image")
         self.assertTrue(Path(capture_call[1]["output_path"]).is_relative_to(Path(tempfile.gettempdir())))
@@ -184,11 +200,94 @@ class PlanningAgentTests(unittest.TestCase):
         client = BrokenCaptureClient()
         with tempfile.TemporaryDirectory() as directory:
             tools = ReadOnlyRevitTools(client, Path(directory))
-            with self.assertRaises(FileNotFoundError):
+            with self.assertRaisesRegex(RuntimeError, "escaped"):
                 tools.execute("capture_revit_view", {})
 
         capture = next(call for call in client.calls if call[0] == "capture_view_image")
         self.assertFalse(Path(capture[1]["output_path"]).exists())
+
+    def test_screenshot_rejects_external_return_path_without_deleting_it(self):
+        class RedirectedCaptureClient(_McpClient):
+            def __init__(self, external_path):
+                super().__init__()
+                self.external_path = external_path
+
+            def call_tool(self, name, arguments):
+                result = super().call_tool(name, arguments)
+                if name == "capture_view_image":
+                    result["saved_path"] = str(self.external_path)
+                return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            external_path = Path(directory) / "must-survive.txt"
+            external_path.write_text("private", encoding="utf-8")
+            tools = ReadOnlyRevitTools(
+                RedirectedCaptureClient(external_path), Path(directory) / "captures"
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "escaped"):
+                tools.execute("capture_revit_view", {})
+
+            self.assertEqual(external_path.read_text(encoding="utf-8"), "private")
+
+    def test_stale_session_guard_blocks_tool_before_any_model_read(self):
+        model = _ScriptedModel([{
+            "content": None,
+            "tool_calls": [{"id": "late", "name": "inspect_revit_model", "arguments": {"query": "overview"}}],
+        }])
+        mcp = _McpClient()
+
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, "stale"):
+                PlanningAgent(model, KnowledgeCatalog(ROOT / "knowledge"), lambda: mcp).plan(
+                    [{"role": "user", "content": "scan"}],
+                    Path(directory),
+                    lambda *args: None,
+                    session_guard=lambda: (_ for _ in ()).throw(RuntimeError("stale session")),
+                )
+
+        self.assertFalse(any(name == "revit_send_code_to_revit" for name, _ in mcp.calls))
+
+    def test_document_change_during_query_discards_result_before_model_reuse(self):
+        class SwitchingDocumentClient(_McpClient):
+            def __init__(self):
+                super().__init__()
+                self.evidence_count = 0
+
+            def call_tool(self, name, arguments):
+                if name == "revit_send_code_to_revit" and arguments["code"] == DOCUMENT_EVIDENCE_CODE:
+                    self.calls.append((name, arguments))
+                    self.evidence_count += 1
+                    project = "project-a" if self.evidence_count == 1 else "project-b"
+                    return {"executed": True, "result": {
+                        "documentTitle": "Development Copy",
+                        "documentPath": "C:\\Models\\Development Copy.rvt",
+                        "projectInformationId": project,
+                        "isModified": False,
+                        "activeViewId": "42",
+                        "activeViewName": "Level 1",
+                    }}
+                return super().call_tool(name, arguments)
+
+        model = _ScriptedModel([{
+            "content": None,
+            "tool_calls": [{"id": "read", "name": "inspect_revit_model", "arguments": {"query": "overview"}}],
+        }])
+        mcp = SwitchingDocumentClient()
+        expected = document_fingerprint(
+            "C:\\Models\\Development Copy.rvt", "Development Copy", "project-a"
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, "document changed"):
+                PlanningAgent(model, KnowledgeCatalog(ROOT / "knowledge"), lambda: mcp).plan(
+                    [{"role": "user", "content": "scan"}],
+                    Path(directory),
+                    lambda *args: None,
+                    document_fingerprint=expected,
+                )
+
+        self.assertEqual(len(model.requests), 1)
 
 
 if __name__ == "__main__":

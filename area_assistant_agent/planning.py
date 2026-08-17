@@ -9,6 +9,8 @@ import tempfile
 from typing import Any, Callable, Dict, List, Optional
 import uuid
 
+from .rvt_mcp_gateway import read_current_revit_evidence
+
 
 READ_ONLY_QUERIES = {
     "overview": """return new {
@@ -168,20 +170,29 @@ class ToolExecution:
 
 
 class ReadOnlyRevitTools:
-    def __init__(self, client: Any, capture_directory: Path):
+    def __init__(
+        self,
+        client: Any,
+        capture_directory: Path,
+        expected_document_fingerprint: Optional[str] = None,
+        session_guard: Optional[Callable[[], None]] = None,
+    ):
         self.client = client
         self.capture_directory = Path(capture_directory)
+        self.expected_document_fingerprint = expected_document_fingerprint
+        self.session_guard = session_guard or (lambda: None)
 
     def execute(self, name: str, arguments: dict) -> ToolExecution:
         if name == "inspect_revit_model":
             if set(arguments) != {"query"} or arguments.get("query") not in READ_ONLY_QUERIES:
                 raise ValueError("read-only Revit query is not allowed")
-            self._verify_single_target()
+            self._guard_current_document()
             result = self.client.call_tool(
                 "revit_send_code_to_revit", {"code": READ_ONLY_QUERIES[arguments["query"]]}
             )
             if not result.get("executed"):
                 raise RuntimeError("rvt-mcp read-only query failed")
+            self._guard_current_document()
             output = {"query": arguments["query"], "result": result.get("result")}
             return ToolExecution(output, output)
         if name == "capture_revit_view":
@@ -190,7 +201,7 @@ class ReadOnlyRevitTools:
             view_id = arguments.get("view_id")
             if view_id is not None and (not isinstance(view_id, int) or isinstance(view_id, bool)):
                 raise ValueError("read-only screenshot view id is invalid")
-            self._verify_single_target()
+            self._guard_current_document()
             self.capture_directory.mkdir(parents=True, exist_ok=True)
             filename = "view-{}.png".format(uuid.uuid4().hex)
             stable_path = self.capture_directory / filename
@@ -204,16 +215,16 @@ class ReadOnlyRevitTools:
             try:
                 result = self.client.call_tool("capture_view_image", payload)
                 saved_path = Path(result.get("saved_path", output_path))
+                if saved_path.is_symlink() or saved_path.resolve() != output_path.resolve():
+                    raise RuntimeError("rvt-mcp screenshot path escaped its staging file")
                 image_bytes = saved_path.read_bytes()
+                self._guard_current_document()
                 stable_path.write_bytes(image_bytes)
             finally:
-                cleanup_paths = {output_path, saved_path}
-                cleanup_paths.discard(stable_path)
-                for cleanup_path in cleanup_paths:
-                    try:
-                        cleanup_path.unlink()
-                    except OSError:
-                        pass
+                try:
+                    output_path.unlink()
+                except OSError:
+                    pass
             if not stable_path.is_file():
                 raise RuntimeError("rvt-mcp screenshot could not be retained")
             audit = {"view_id": result.get("view_id", view_id), "saved_path": str(stable_path)}
@@ -224,16 +235,15 @@ class ReadOnlyRevitTools:
             )
         raise ValueError("tool is outside the read-only Revit boundary")
 
-    def _verify_single_target(self) -> None:
-        discovery = self.client.call_tool("revit_list_available_targets", {})
-        targets = discovery.get("targets", [])
-        if discovery.get("count") != 1 or len(targets) != 1:
-            raise RuntimeError("read-only planning requires exactly one Revit target")
-        switched = self.client.call_tool(
-            "revit_switch_target", {"version": str(targets[0]["year"]), "verify": True}
-        )
-        if not switched.get("ok") or not switched.get("verified"):
-            raise RuntimeError("rvt-mcp target verification failed")
+    def _guard_current_document(self) -> None:
+        self.session_guard()
+        evidence = read_current_revit_evidence(self.client)
+        if (
+            self.expected_document_fingerprint is not None
+            and evidence.document_fingerprint != self.expected_document_fingerprint
+        ):
+            raise RuntimeError("rvt-mcp current document changed during planning")
+        self.session_guard()
 
 
 class PlanningAgent:
@@ -243,7 +253,14 @@ class PlanningAgent:
         self.mcp_client_factory = mcp_client_factory
         self.max_turns = max_turns
 
-    def plan(self, conversation: List[dict], session_directory: Path, audit: Callable[[str, dict, Any, Optional[str]], None]) -> PlanningResult:
+    def plan(
+        self,
+        conversation: List[dict],
+        session_directory: Path,
+        audit: Callable[[str, dict, Any, Optional[str]], None],
+        document_fingerprint: Optional[str] = None,
+        session_guard: Optional[Callable[[], None]] = None,
+    ) -> PlanningResult:
         knowledge = self.knowledge.load()
         messages = [{
             "role": "system",
@@ -258,7 +275,12 @@ class PlanningAgent:
         candidate = self.mcp_client_factory()
         context = candidate if hasattr(candidate, "__enter__") else nullcontext(candidate)
         with context as client:
-            tools = ReadOnlyRevitTools(client, Path(session_directory) / "screenshots")
+            tools = ReadOnlyRevitTools(
+                client,
+                Path(session_directory) / "screenshots",
+                expected_document_fingerprint=document_fingerprint,
+                session_guard=session_guard,
+            )
             for _ in range(self.max_turns):
                 turn = self.model_client.planning_turn(messages, TOOL_DEFINITIONS)
                 calls = turn.get("tool_calls", [])

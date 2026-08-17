@@ -373,8 +373,26 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                             error=error,
                         )
 
+                def guard_planning_context():
+                    with self.server.session_lock:
+                        self._require_current_session_context(
+                            request, repository, active_session_id=session_id
+                        )
+                        binding = self.server.current_document_status
+                        if (
+                            not isinstance(binding, dict)
+                            or binding.get("binding_status") != "bound"
+                            or binding.get("rvt_mcp_status") != "verified"
+                            or binding.get("document_fingerprint") != document_fingerprint
+                        ):
+                            raise ValueError("planning document context is no longer current")
+
                 result = self.server.planning_agent.plan(
-                    conversation, session_directory, audit
+                    conversation,
+                    session_directory,
+                    audit,
+                    document_fingerprint=document_fingerprint,
+                    session_guard=guard_planning_context,
                 )
                 payload = result.as_dict()
                 with self.server.session_lock:
