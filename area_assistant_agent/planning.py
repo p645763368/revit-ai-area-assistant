@@ -278,6 +278,7 @@ class PlanningAgent:
             "content": (
                 "You are the read-only planning stage of a Revit GFA assistant. "
                 "Use tools whenever model evidence or a screenshot is needed. Screenshots are supporting evidence only; geometry queries remain authoritative. "
+                "If screenshot capture is unavailable, do not retry it in the same plan; continue from structured geometry and clearly state the visual-evidence limitation. "
                 "Never propose a final regulatory factor without user confirmation. Return only JSON with summary, question, and 2-4 options. "
                 "Exactly one option must be recommended; every option needs id, label, recommended, rationale, and impact.\nKnowledge:\n"
                 + json.dumps(knowledge, ensure_ascii=False)
@@ -293,6 +294,7 @@ class PlanningAgent:
                 session_guard=session_guard,
                 screenshot_commit=screenshot_commit,
             )
+            screenshot_failure = None
             for _ in range(self.max_turns):
                 turn = self.model_client.planning_turn(messages, TOOL_DEFINITIONS)
                 calls = turn.get("tool_calls", [])
@@ -322,12 +324,50 @@ class PlanningAgent:
                         arguments = call.get("arguments")
                         if not isinstance(arguments, dict):
                             raise ValueError("model tool arguments must be an object")
+                        if name == "capture_revit_view" and screenshot_failure is not None:
+                            unavailable = {
+                                "visual_evidence": {
+                                    "available": False,
+                                    "reason": "capture_failed",
+                                    "instruction": (
+                                        "Do not retry capture in this plan. Continue from "
+                                        "structured geometry and disclose the limitation."
+                                    ),
+                                }
+                            }
+                            audit(name, arguments, None, screenshot_failure)
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": call.get("id"),
+                                "content": json.dumps(unavailable, ensure_ascii=False),
+                            })
+                            continue
                         try:
                             execution = tools.execute(name, arguments)
                             audit(name, arguments, execution.audit_output, None)
                         except Exception as error:
                             audit(name or "unknown", arguments, None, str(error))
-                            raise
+                            if name != "capture_revit_view" or not _is_capture_unavailable(error):
+                                raise
+                            screenshot_failure = "visual evidence capture failed"
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": call.get("id"),
+                                "content": json.dumps(
+                                    {
+                                        "visual_evidence": {
+                                            "available": False,
+                                            "reason": "capture_failed",
+                                            "instruction": (
+                                                "Do not retry capture in this plan. Continue "
+                                                "from structured geometry and disclose the limitation."
+                                            ),
+                                        }
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            })
+                            continue
                         messages.append({
                             "role": "tool",
                             "tool_call_id": call.get("id"),
@@ -353,3 +393,7 @@ class PlanningAgent:
 
 def _nonempty(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _is_capture_unavailable(error: Exception) -> bool:
+    return isinstance(error, TimeoutError) or str(error) == "rvt-mcp response timed out"

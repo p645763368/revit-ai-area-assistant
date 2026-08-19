@@ -230,6 +230,107 @@ class PlanningAgentTests(unittest.TestCase):
 
             self.assertEqual(external_path.read_text(encoding="utf-8"), "private")
 
+    def test_screenshot_timeout_degrades_to_structured_plan_without_retrying_mcp(self):
+        class TimeoutCaptureClient(_McpClient):
+            def call_tool(self, name, arguments):
+                if name == "capture_view_image":
+                    self.calls.append((name, arguments))
+                    raise TimeoutError("rvt-mcp response timed out")
+                return super().call_tool(name, arguments)
+
+        final = json.dumps(
+            {
+                "summary": "结构化几何已读取；视觉证据暂不可用。",
+                "question": "在缺少截图的情况下采用哪个来源继续核对？",
+                "options": [
+                    {
+                        "id": "floor",
+                        "label": "采用楼板",
+                        "recommended": True,
+                        "rationale": "精确轮廓可用",
+                        "impact": "继续结构化核对",
+                    },
+                    {
+                        "id": "ask",
+                        "label": "等待视觉证据",
+                        "recommended": False,
+                        "rationale": "截图当前不可用",
+                        "impact": "修复环境后重试",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        )
+        model = _ScriptedModel(
+            [
+                {
+                    "content": None,
+                    "tool_calls": [
+                        {"id": "image-1", "name": "capture_revit_view", "arguments": {}}
+                    ],
+                },
+                {
+                    "content": None,
+                    "tool_calls": [
+                        {"id": "image-2", "name": "capture_revit_view", "arguments": {}}
+                    ],
+                },
+                {"content": final, "tool_calls": []},
+            ]
+        )
+        mcp = TimeoutCaptureClient()
+        events = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = PlanningAgent(
+                model, KnowledgeCatalog(ROOT / "knowledge"), lambda: mcp
+            ).plan(
+                [{"role": "user", "content": "scan"}],
+                Path(directory),
+                lambda name, inputs, output, error: events.append(
+                    (name, inputs, output, error)
+                ),
+            )
+
+        self.assertEqual(len(result.options), 2)
+        self.assertIn("视觉证据暂不可用", result.summary)
+        self.assertEqual(
+            [name for name, _ in mcp.calls].count("capture_view_image"), 1
+        )
+        self.assertEqual([event[0] for event in events], [
+            "capture_revit_view", "capture_revit_view"
+        ])
+        tool_results = [
+            message
+            for request, _ in model.requests[1:]
+            for message in request
+            if message.get("role") == "tool"
+        ]
+        self.assertTrue(any("Do not retry capture" in item["content"] for item in tool_results))
+
+    def test_screenshot_session_guard_failure_remains_fail_closed(self):
+        model = _ScriptedModel(
+            [{
+                "content": None,
+                "tool_calls": [
+                    {"id": "image", "name": "capture_revit_view", "arguments": {}}
+                ],
+            }]
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, "stale session"):
+                PlanningAgent(
+                    model, KnowledgeCatalog(ROOT / "knowledge"), lambda: _McpClient()
+                ).plan(
+                    [{"role": "user", "content": "scan"}],
+                    Path(directory),
+                    lambda *_: None,
+                    session_guard=lambda: (_ for _ in ()).throw(
+                        RuntimeError("stale session")
+                    ),
+                )
+
     def test_stale_session_guard_blocks_tool_before_any_model_read(self):
         model = _ScriptedModel([{
             "content": None,
