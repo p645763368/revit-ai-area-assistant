@@ -1,4 +1,6 @@
+import contextlib
 import importlib
+import io
 import sys
 import threading
 import types
@@ -787,6 +789,42 @@ class PyRevitPanelTests(unittest.TestCase):
         self.assertFalse(panel.SendButton.IsEnabled)
         self.assertFalse(panel.AnalyzeButton.IsEnabled)
         self.assertFalse(panel.AnalyzeSelectionButton.IsEnabled)
+
+    def test_unexpected_background_error_is_dispatched_without_console_output(self):
+        panel_module = _load_panel_module()
+        panel = panel_module.AiAreaAssistantPanel.__new__(
+            panel_module.AiAreaAssistantPanel
+        )
+        dispatched = threading.Event()
+        observed = []
+        escaped = []
+
+        def dispatch(callback):
+            callback()
+            dispatched.set()
+
+        def fail(message, retryable):
+            observed.append((message, retryable))
+
+        def explode():
+            raise RuntimeError("capture timed out")
+
+        panel._dispatch = dispatch
+        panel._reply_failed = fail
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch.object(
+            threading,
+            "excepthook",
+            lambda args: escaped.append(args.exc_value),
+        ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            panel._run_background(explode)
+            self.assertTrue(dispatched.wait(1))
+
+        self.assertEqual(observed, [("后台任务失败：capture timed out", True)])
+        self.assertEqual(escaped, [])
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
 
 
 if __name__ == "__main__":

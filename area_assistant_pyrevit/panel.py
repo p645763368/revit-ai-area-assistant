@@ -803,8 +803,25 @@ class AiAreaAssistantPanel(forms.WPFPanel):
     def _dispatch(self, callback):
         self.Dispatcher.BeginInvoke(Action(callback))
 
-    @staticmethod
-    def _run_background(callback):
-        worker = threading.Thread(target=callback)
+    def _background_failed(self, message):
+        self._reply_failed("后台任务失败：{}".format(message), True)
+
+    def _run_background(self, callback):
+        def run_safely():
+            try:
+                callback()
+            except Exception as error:
+                try:
+                    message = "{}".format(error).strip() or error.__class__.__name__
+                    self._dispatch(
+                        lambda text=message: self._background_failed(text)
+                    )
+                except Exception:
+                    # Do not let error reporting escape an IronPython worker.
+                    # pyRevit may otherwise open ScriptOutput from this non-STA
+                    # thread and terminate Revit.
+                    pass
+
+        worker = threading.Thread(target=run_safely)
         worker.daemon = True
         worker.start()

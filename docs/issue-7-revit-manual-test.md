@@ -10,9 +10,10 @@
 ## 前置配置
 
 1. 使用用户级环境变量配置 `AI_AREA_ASSISTANT_PYTHON`、`AI_AREA_ASSISTANT_TEST_DOCUMENT`、模型名称、Base URL 和安全注入的 API key。
-2. 完全退出并重启 Revit 2026，打开指定开发测试副本。
-3. 加载本 worktree 的 pyRevit extension，打开“AI Area Assistant”面板。
-4. 等待文档状态显示 `bound`、rvt-mcp 显示 `verified`；选择“新建会话”。
+2. 确认 rvt-mcp 引用的 `RevitAPIUI` 等程序集版本与当前加载的 Revit 2026 build 一致。若 Revit journal 出现类似 `26.1.0.0` 与已加载 `26.0.4.0` 不匹配，先停止截图测试并修复 rvt-mcp/Revit 安装匹配；即使环境不匹配，面板仍必须显示可重试错误且 Revit 不得退出。
+3. 完全退出并重启 Revit 2026，打开指定开发测试副本。
+4. 加载本 worktree 的 pyRevit extension，打开“AI Area Assistant”面板。
+5. 等待文档状态显示 `bound`、rvt-mcp 显示 `verified`；选择“新建会话”。
 
 ## 场景 1：只读扫描、工具调用和截图
 
