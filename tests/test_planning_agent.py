@@ -48,6 +48,20 @@ class _McpClient:
                     "activeViewId": "42",
                     "activeViewName": "Level 1",
                 }}
+            if arguments["code"] == READ_ONLY_QUERIES["boundary_candidates"]:
+                return {"executed": True, "result": [{
+                    "id": "12",
+                    "uniqueId": "floor-12",
+                    "category": "Floors",
+                    "locationCurve": None,
+                    "areaBoundaryCurve": None,
+                    "profileLoops": [[{
+                        "curveType": "Line",
+                        "length": 10.0,
+                        "start": [0.0, 0.0, 0.0],
+                        "end": [10.0, 0.0, 0.0],
+                    }]],
+                }]}
             return {"executed": True, "result": {"levels": [{"id": "12", "name": "一层"}]}}
         if name == "capture_view_image":
             Path(arguments["output_path"]).write_bytes(b"png")
@@ -374,6 +388,64 @@ class PlanningAgentTests(unittest.TestCase):
                     KnowledgeCatalog(ROOT / "knowledge"),
                     NoCaptureClient,
                 ).plan([{"role": "user", "content": "scan"}], Path(directory), lambda *_: None)
+
+    def test_missing_capture_rejects_empty_or_malformed_boundary_results(self):
+        invalid_results = (
+            None,
+            {},
+            [],
+            [{
+                "id": "12",
+                "locationCurve": None,
+                "areaBoundaryCurve": None,
+                "profileLoops": [],
+            }],
+        )
+        final = json.dumps({
+            "summary": "候选方案",
+            "question": "采用哪个？",
+            "options": [
+                {"id": "a", "label": "A", "recommended": True, "rationale": "边界可用", "impact": "继续"},
+                {"id": "b", "label": "B", "recommended": False, "rationale": "备选", "impact": "继续"},
+            ],
+        })
+
+        for invalid_result in invalid_results:
+            with self.subTest(result=invalid_result):
+                class InvalidBoundaryClient(_McpClient):
+                    def list_tools(self):
+                        return {"revit_send_code_to_revit"}
+
+                    def call_tool(self, name, arguments):
+                        if (
+                            name == "revit_send_code_to_revit"
+                            and arguments.get("code") == READ_ONLY_QUERIES["boundary_candidates"]
+                        ):
+                            self.calls.append((name, arguments))
+                            return {"executed": True, "result": invalid_result}
+                        return super().call_tool(name, arguments)
+
+                model = _ScriptedModel([
+                    {"content": None, "tool_calls": [{
+                        "id": "read",
+                        "name": "inspect_revit_model",
+                        "arguments": {"query": "boundary_candidates"},
+                    }]},
+                    {"content": final, "tool_calls": []},
+                ])
+                with tempfile.TemporaryDirectory() as directory:
+                    with self.assertRaisesRegex(
+                        RuntimeError, "no structured boundary geometry"
+                    ):
+                        PlanningAgent(
+                            model,
+                            KnowledgeCatalog(ROOT / "knowledge"),
+                            InvalidBoundaryClient,
+                        ).plan(
+                            [{"role": "user", "content": "scan"}],
+                            Path(directory),
+                            lambda *_: None,
+                        )
 
     def test_screenshot_session_guard_failure_remains_fail_closed(self):
         model = _ScriptedModel(

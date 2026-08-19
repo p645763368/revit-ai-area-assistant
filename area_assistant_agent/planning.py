@@ -4,6 +4,7 @@ import base64
 from contextlib import nullcontext
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 import tempfile
 from typing import Any, Callable, Dict, List, Optional
@@ -370,7 +371,9 @@ class PlanningAgent:
                                 name == "inspect_revit_model"
                                 and arguments.get("query") == "boundary_candidates"
                             ):
-                                structured_geometry_available = True
+                                structured_geometry_available = _has_valid_boundary_geometry(
+                                    execution.model_output.get("result")
+                                )
                         except Exception as error:
                             audit(name or "unknown", arguments, None, str(error))
                             if name != "capture_revit_view" or not _is_capture_unavailable(error):
@@ -434,4 +437,48 @@ def _is_capture_unavailable(error: Exception) -> bool:
         isinstance(error, TimeoutError)
         or message == "rvt-mcp response timed out"
         or message == "MCP request failed (-32602): Unknown tool: 'capture_view_image'"
+    )
+
+
+def _has_valid_boundary_geometry(value: Any) -> bool:
+    if not isinstance(value, list):
+        return False
+    for candidate in value:
+        if not isinstance(candidate, dict):
+            continue
+        curves = [candidate.get("locationCurve"), candidate.get("areaBoundaryCurve")]
+        profile_loops = candidate.get("profileLoops")
+        if isinstance(profile_loops, list):
+            for loop in profile_loops:
+                if isinstance(loop, list):
+                    curves.extend(loop)
+        if any(_is_valid_boundary_curve(curve) for curve in curves):
+            return True
+    return False
+
+
+def _is_valid_boundary_curve(value: Any) -> bool:
+    if not isinstance(value, dict) or not _nonempty(value.get("curveType")):
+        return False
+    length = value.get("length")
+    if (
+        not isinstance(length, (int, float))
+        or isinstance(length, bool)
+        or not math.isfinite(length)
+        or length <= 0
+    ):
+        return False
+    return _is_xyz(value.get("start")) and _is_xyz(value.get("end"))
+
+
+def _is_xyz(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == 3
+        and all(
+            isinstance(item, (int, float))
+            and not isinstance(item, bool)
+            and math.isfinite(item)
+            for item in value
+        )
     )
