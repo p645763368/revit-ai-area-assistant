@@ -97,6 +97,18 @@ class McpStdioClient:
                     raise RuntimeError("rvt-mcp tool failed: " + name) from error
         raise RuntimeError("rvt-mcp tool returned no JSON text: " + name)
 
+    def list_tools(self) -> set[str]:
+        result = self._request("tools/list", {})
+        tools = result.get("tools")
+        if not isinstance(tools, list):
+            raise RuntimeError("rvt-mcp tools/list returned an invalid result")
+        names = set()
+        for tool in tools:
+            if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
+                raise RuntimeError("rvt-mcp tools/list returned an invalid tool")
+            names.add(tool["name"])
+        return names
+
     def _request(self, method: str, params: dict) -> dict:
         request_id = self._next_id
         self._next_id += 1

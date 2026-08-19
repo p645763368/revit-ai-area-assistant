@@ -34,6 +34,20 @@ class FakeMcpClient:
 
 
 class RvtMcpGatewayTests(unittest.TestCase):
+    def test_mcp_client_negotiates_available_tool_names(self):
+        client = McpStdioClient(["unused"])
+        client._request = lambda method, params: {
+            "tools": [
+                {"name": "revit_send_code_to_revit"},
+                {"name": "capture_view_image"},
+            ]
+        }
+
+        self.assertEqual(
+            client.list_tools(),
+            {"revit_send_code_to_revit", "capture_view_image"},
+        )
+
     def test_agent_reads_and_verifies_the_single_live_revit_target(self):
         client = FakeMcpClient()
 

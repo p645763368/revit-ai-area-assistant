@@ -389,10 +389,37 @@ class AgentClient:
             return envelope["payload"]
         except AgentConnectionError:
             raise
-        except (HTTPError, OSError, TypeError, ValueError, URLError) as exc:
+        except HTTPError as exc:
+            message = _agent_http_error_message(exc, request_id)
+            raise AgentConnectionError(message)
+        except (OSError, TypeError, ValueError, URLError) as exc:
             raise AgentConnectionError(
                 "Local Agent session request failed: {}".format(exc)
             )
+
+
+def _agent_http_error_message(error, request_id):
+    try:
+        body = json.loads(error.read().decode("utf-8"))
+    except Exception:
+        return "Local Agent session request failed: {}".format(error)
+    required = {
+        "contract_version", "message_type", "request_id", "code", "message", "retryable"
+    }
+    if (
+        isinstance(body, dict)
+        and required.issubset(body)
+        and set(body).issubset(required | {"details"})
+        and body.get("contract_version") == CONTRACT_VERSION
+        and body.get("message_type") == "error"
+        and body.get("request_id") == request_id
+        and _nonempty_string(body.get("code"))
+        and _nonempty_string(body.get("message"))
+        and isinstance(body.get("retryable"), bool)
+        and ("details" not in body or isinstance(body.get("details"), dict))
+    ):
+        return body["message"]
+    return "Local Agent session request failed: {}".format(error)
 
 
 def ensure_agent_available(client, start_agent, attempts=20, delay_seconds=0.25):

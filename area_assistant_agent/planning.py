@@ -287,6 +287,21 @@ class PlanningAgent:
         candidate = self.mcp_client_factory()
         context = candidate if hasattr(candidate, "__enter__") else nullcontext(candidate)
         with context as client:
+            available_mcp_tools = client.list_tools()
+            capture_available = "capture_view_image" in available_mcp_tools
+            tool_definitions = [TOOL_DEFINITIONS[0]]
+            if capture_available:
+                tool_definitions.append(TOOL_DEFINITIONS[1])
+            else:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "Visual evidence is unavailable because this MCP connection does "
+                        "not provide capture_view_image. Do not request a screenshot. You "
+                        "must successfully inspect boundary_candidates before recommending "
+                        "any source; otherwise ask the user to restore evidence capability."
+                    ),
+                })
             tools = ReadOnlyRevitTools(
                 client,
                 Path(session_directory) / "screenshots",
@@ -294,9 +309,15 @@ class PlanningAgent:
                 session_guard=session_guard,
                 screenshot_commit=screenshot_commit,
             )
-            screenshot_failure = None
+            screenshot_failure = (
+                None if capture_available
+                else "capture_view_image is not available on this MCP connection"
+            )
+            structured_geometry_available = False
+            if screenshot_failure is not None:
+                audit("capture_revit_view", {}, None, screenshot_failure)
             for _ in range(self.max_turns):
-                turn = self.model_client.planning_turn(messages, TOOL_DEFINITIONS)
+                turn = self.model_client.planning_turn(messages, tool_definitions)
                 calls = turn.get("tool_calls", [])
                 if calls:
                     messages.append(
@@ -345,6 +366,11 @@ class PlanningAgent:
                         try:
                             execution = tools.execute(name, arguments)
                             audit(name, arguments, execution.audit_output, None)
+                            if (
+                                name == "inspect_revit_model"
+                                and arguments.get("query") == "boundary_candidates"
+                            ):
+                                structured_geometry_available = True
                         except Exception as error:
                             audit(name or "unknown", arguments, None, str(error))
                             if name != "capture_revit_view" or not _is_capture_unavailable(error):
@@ -387,7 +413,14 @@ class PlanningAgent:
                 content = turn.get("content")
                 if not isinstance(content, str):
                     raise ValueError("model did not return a planning result")
-                return PlanningResult.from_dict(json.loads(content))
+                result = PlanningResult.from_dict(json.loads(content))
+                if screenshot_failure is not None and not structured_geometry_available:
+                    raise RuntimeError(
+                        "Visual evidence is unavailable and no structured boundary geometry "
+                        "was collected. Restore capture_view_image or collect "
+                        "boundary_candidates before requesting recommendations."
+                    )
+                return result
         raise RuntimeError("planning tool loop exceeded its turn limit")
 
 
@@ -396,4 +429,9 @@ def _nonempty(value: Any) -> bool:
 
 
 def _is_capture_unavailable(error: Exception) -> bool:
-    return isinstance(error, TimeoutError) or str(error) == "rvt-mcp response timed out"
+    message = str(error)
+    return (
+        isinstance(error, TimeoutError)
+        or message == "rvt-mcp response timed out"
+        or message == "MCP request failed (-32602): Unknown tool: 'capture_view_image'"
+    )

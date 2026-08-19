@@ -54,6 +54,14 @@ class _McpClient:
             return {"view_id": 42, "saved_path": arguments["output_path"]}
         raise AssertionError(name)
 
+    def list_tools(self):
+        return {
+            "revit_list_available_targets",
+            "revit_switch_target",
+            "revit_send_code_to_revit",
+            "capture_view_image",
+        }
+
 
 class PlanningAgentTests(unittest.TestCase):
     def test_versioned_rules_and_anonymized_cases_are_loaded(self):
@@ -265,6 +273,14 @@ class PlanningAgentTests(unittest.TestCase):
             [
                 {
                     "content": None,
+                    "tool_calls": [{
+                        "id": "geometry",
+                        "name": "inspect_revit_model",
+                        "arguments": {"query": "boundary_candidates"},
+                    }],
+                },
+                {
+                    "content": None,
                     "tool_calls": [
                         {"id": "image-1", "name": "capture_revit_view", "arguments": {}}
                     ],
@@ -298,7 +314,7 @@ class PlanningAgentTests(unittest.TestCase):
             [name for name, _ in mcp.calls].count("capture_view_image"), 1
         )
         self.assertEqual([event[0] for event in events], [
-            "capture_revit_view", "capture_revit_view"
+            "inspect_revit_model", "capture_revit_view", "capture_revit_view"
         ])
         tool_results = [
             message
@@ -307,6 +323,57 @@ class PlanningAgentTests(unittest.TestCase):
             if message.get("role") == "tool"
         ]
         self.assertTrue(any("Do not retry capture" in item["content"] for item in tool_results))
+
+    def test_missing_capture_capability_uses_geometry_without_calling_screenshot(self):
+        class NoCaptureClient(_McpClient):
+            def list_tools(self):
+                return {"revit_send_code_to_revit"}
+
+        final = json.dumps({
+            "summary": "已取得结构化边界；视觉证据不可用。",
+            "question": "采用哪个来源继续？",
+            "options": [
+                {"id": "a", "label": "楼板", "recommended": True, "rationale": "边界曲线可用", "impact": "继续核对"},
+                {"id": "b", "label": "等待截图", "recommended": False, "rationale": "视觉证据缺失", "impact": "稍后复核"},
+            ],
+        }, ensure_ascii=False)
+        model = _ScriptedModel([
+            {"content": None, "tool_calls": [{"id": "read", "name": "inspect_revit_model", "arguments": {"query": "boundary_candidates"}}]},
+            {"content": None, "tool_calls": [{"id": "image", "name": "capture_revit_view", "arguments": {}}]},
+            {"content": final, "tool_calls": []},
+        ])
+        mcp = NoCaptureClient()
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = PlanningAgent(model, KnowledgeCatalog(ROOT / "knowledge"), lambda: mcp).plan(
+                [{"role": "user", "content": "scan"}], Path(directory), lambda *_: None
+            )
+
+        self.assertEqual(len(result.options), 2)
+        self.assertFalse(any(name == "capture_view_image" for name, _ in mcp.calls))
+        self.assertEqual([item["function"]["name"] for item in model.requests[0][1]], ["inspect_revit_model"])
+
+    def test_missing_capture_without_boundary_geometry_rejects_recommendations(self):
+        class NoCaptureClient(_McpClient):
+            def list_tools(self):
+                return {"revit_send_code_to_revit"}
+
+        final = json.dumps({
+            "summary": "猜测方案",
+            "question": "采用哪个？",
+            "options": [
+                {"id": "a", "label": "A", "recommended": True, "rationale": "猜测", "impact": "未知"},
+                {"id": "b", "label": "B", "recommended": False, "rationale": "猜测", "impact": "未知"},
+            ],
+        })
+
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, "no structured boundary geometry"):
+                PlanningAgent(
+                    _ScriptedModel([{"content": final, "tool_calls": []}]),
+                    KnowledgeCatalog(ROOT / "knowledge"),
+                    NoCaptureClient,
+                ).plan([{"role": "user", "content": "scan"}], Path(directory), lambda *_: None)
 
     def test_screenshot_session_guard_failure_remains_fail_closed(self):
         model = _ScriptedModel(
