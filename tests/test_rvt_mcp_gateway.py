@@ -1,5 +1,6 @@
 import unittest
 import time
+from unittest.mock import patch
 
 from area_assistant_agent.rvt_mcp_gateway import McpStdioClient, read_current_revit_evidence
 
@@ -72,13 +73,60 @@ class RvtMcpGatewayTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "response timed out"):
             client._read()
 
-    def test_mcp_timeout_is_a_single_deadline_for_the_whole_session(self):
+    def test_request_started_after_client_age_gets_a_fresh_timeout_window(self):
+        class RecordingQueue:
+            def __init__(self):
+                self.timeouts = []
+
+            def get(self, timeout):
+                self.timeouts.append(timeout)
+                return '{"jsonrpc":"2.0","id":1,"result":{}}'
+
+        client = McpStdioClient(["unused"], timeout_seconds=30.0)
+        client._messages = RecordingQueue()
+        client._write = lambda message: None
+
+        with patch(
+            "area_assistant_agent.rvt_mcp_gateway.time.monotonic",
+            side_effect=[1000.0, 1000.25],
+        ):
+            client._request("tools/call", {})
+
+        self.assertEqual(client._messages.timeouts, [29.75])
+
+    def test_each_query_and_later_capture_receive_independent_timeouts(self):
+        class RecordingQueue:
+            def __init__(self):
+                self.timeouts = []
+                self.responses = [
+                    '{"jsonrpc":"2.0","id":1,"result":{}}',
+                    '{"jsonrpc":"2.0","id":2,"result":{}}',
+                ]
+
+            def get(self, timeout):
+                self.timeouts.append(timeout)
+                return self.responses.pop(0)
+
+        client = McpStdioClient(["unused"], timeout_seconds=30.0)
+        client._messages = RecordingQueue()
+        client._write = lambda message: None
+
+        with patch(
+            "area_assistant_agent.rvt_mcp_gateway.time.monotonic",
+            side_effect=[10.0, 10.5, 80.0, 80.25],
+        ):
+            client._request("tools/call", {"name": "revit_send_code_to_revit"})
+            client._request("tools/call", {"name": "capture_view_image"})
+
+        self.assertEqual(client._messages.timeouts, [29.5, 29.75])
+
+    def test_single_unresponsive_request_still_times_out(self):
         client = McpStdioClient(["unused"], timeout_seconds=0.01)
-        client._deadline = time.monotonic() - 1
+        client._write = lambda message: None
 
         started = time.monotonic()
         with self.assertRaisesRegex(RuntimeError, "response timed out"):
-            client._read()
+            client._request("tools/call", {})
 
         self.assertLess(time.monotonic() - started, 0.1)
 

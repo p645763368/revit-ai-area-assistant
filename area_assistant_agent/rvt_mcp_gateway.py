@@ -46,10 +46,8 @@ class McpStdioClient:
         self._timeout_seconds = timeout_seconds
         self._messages: queue.Queue[Optional[str]] = queue.Queue()
         self._reader: Optional[threading.Thread] = None
-        self._deadline: Optional[float] = None
 
     def __enter__(self) -> "McpStdioClient":
-        self._deadline = time.monotonic() + self._timeout_seconds
         self._process = subprocess.Popen(
             self._command,
             stdin=subprocess.PIPE,
@@ -102,9 +100,10 @@ class McpStdioClient:
     def _request(self, method: str, params: dict) -> dict:
         request_id = self._next_id
         self._next_id += 1
+        deadline = time.monotonic() + self._timeout_seconds
         self._write({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
         while True:
-            message = self._read()
+            message = self._read(deadline)
             if message.get("id") != request_id:
                 continue
             if "error" in message:
@@ -125,10 +124,10 @@ class McpStdioClient:
         stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
         stdin.flush()
 
-    def _read(self) -> dict:
+    def _read(self, deadline: Optional[float] = None) -> dict:
         timeout = self._timeout_seconds
-        if self._deadline is not None:
-            timeout = max(0.0, self._deadline - time.monotonic())
+        if deadline is not None:
+            timeout = max(0.0, deadline - time.monotonic())
         try:
             line = self._messages.get(timeout=timeout)
         except queue.Empty as error:
