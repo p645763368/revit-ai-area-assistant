@@ -12,7 +12,13 @@ from System import Action
 from pyrevit import HOST_APP, forms, framework, revit
 
 from . import PANEL_ID
-from .client import AgentClient, AgentConnectionError, ensure_agent_available
+from .client import (
+    AgentClient,
+    AgentConnectionError,
+    PlanningRequestTimeout,
+    ensure_agent_available,
+    planning_timeout_from_environment,
+)
 from .document_status import collect_document_status
 from .process import start_agent_process
 from .selection import create_selection_executor, format_selection_summary, summarize_elements
@@ -32,7 +38,11 @@ class AiAreaAssistantPanel(forms.WPFPanel):
     def __init__(self):
         forms.WPFPanel.__init__(self)
         port = os.environ.get("AI_AREA_ASSISTANT_PORT", "8765")
-        self._client = AgentClient("http://127.0.0.1:{}".format(port), timeout_seconds=50)
+        self._client = AgentClient(
+            "http://127.0.0.1:{}".format(port),
+            timeout_seconds=50,
+            planning_timeout_seconds=planning_timeout_from_environment(),
+        )
         self._last_message = None
         self._document_pause_reason = None
         self._bound_document_fingerprint = None
@@ -53,6 +63,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._data_root = None
         self._pending_session_revoke = None
         self._planning_active = False
+        self._planning_timeout_pending = False
         self._planning_options = []
         self.SendButton.Click += self.send_click
         self.AnalyzeButton.Click += self.analyze_click
@@ -136,6 +147,13 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             self._choose_session("new", None)
 
     def retry_click(self, sender, args):
+        if getattr(self, "_planning_timeout_pending", False):
+            self._set_status(
+                "等待 Agent 完成",
+                "上次付费规划可能仍在运行；本会话已阻止重复提交。",
+            )
+            self.RetryButton.IsEnabled = False
+            return
         if self._last_message:
             if self._planning_active:
                 self._request_plan(self._last_message)
@@ -418,6 +436,13 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             )
 
     def _request_plan(self, message):
+        if getattr(self, "_planning_timeout_pending", False):
+            self._set_status(
+                "等待 Agent 完成",
+                "上次付费规划可能仍在运行；本会话已阻止重复提交。",
+            )
+            self.RetryButton.IsEnabled = False
+            return
         context = self._session_context()
         if context is None:
             self._set_status("等待选择", "请先为当前文档选择继续或新建会话")
@@ -452,6 +477,13 @@ class AiAreaAssistantPanel(forms.WPFPanel):
                     payload, session
                 )
             )
+        except PlanningRequestTimeout as exc:
+            text = str(exc)
+            self._dispatch(
+                lambda message=text, session=context: self._planning_timed_out(
+                    message, session
+                )
+            )
         except AgentConnectionError as exc:
             text = str(exc)
             self._dispatch(
@@ -463,6 +495,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
     def _plan_completed(self, result, context):
         if not self._session_is_current(context):
             return
+        self._planning_timeout_pending = False
         self._planning_options = result["options"]
         self.StructuredSummary.Text = result["summary"]
         self.StructuredQuestion.Text = result["question"]
@@ -493,6 +526,19 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self.Transcript.AppendText("\n")
         self._set_busy(False)
         self._set_status("等待选择", "可点击方案，或在输入框自由说明项目意图")
+
+    def _planning_timed_out(self, message, context):
+        if not self._session_is_current(context):
+            return
+        self._planning_timeout_pending = True
+        self.Transcript.AppendText("\n[错误] {}\n\n".format(message))
+        self._set_busy(False)
+        self.SendButton.IsEnabled = False
+        self.AnalyzeButton.IsEnabled = False
+        if hasattr(self, "AnalyzeSelectionButton"):
+            self.AnalyzeSelectionButton.IsEnabled = False
+        self.RetryButton.IsEnabled = False
+        self._set_status("等待 Agent 完成", message)
 
     def _select_plan_option(self, index):
         if index >= len(self._planning_options):
@@ -676,6 +722,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             or expected_context[2] != self._session_document_fingerprint
         ):
             return
+        self._planning_timeout_pending = False
         self._session_id = result.get("active_session_id")
         self._session_context_id = result.get("context_id")
         self._data_root = result.get("data_root") or self._data_root
@@ -697,6 +744,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._session_document_fingerprint = None
         self._data_root = None
         self._planning_active = False
+        self._planning_timeout_pending = False
         self._planning_options = []
         if hasattr(self, "StructuredSummary"):
             self.StructuredSummary.Text = "文档已切换；旧方案已清除。"

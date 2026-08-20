@@ -1,6 +1,8 @@
 """Loopback client used by the pyRevit panel without Revit API dependencies."""
 
 import json
+import os
+import socket
 import time
 import uuid
 
@@ -20,6 +22,22 @@ except NameError:
 
 class AgentConnectionError(Exception):
     pass
+
+
+class PlanningRequestTimeout(AgentConnectionError):
+    pass
+
+
+def planning_timeout_from_environment(margin_seconds=15.0):
+    try:
+        model_timeout = float(
+            os.environ.get("AI_AREA_ASSISTANT_TIMEOUT_SECONDS", "30")
+        )
+    except (TypeError, ValueError):
+        model_timeout = 30.0
+    if model_timeout <= 0:
+        model_timeout = 30.0
+    return model_timeout + margin_seconds
 
 
 def _nonempty_string(value):
@@ -102,9 +120,19 @@ def _valid_session_payload(action, payload):
 
 
 class AgentClient:
-    def __init__(self, base_url="http://127.0.0.1:8765", timeout_seconds=2):
+    def __init__(
+        self,
+        base_url="http://127.0.0.1:8765",
+        timeout_seconds=2,
+        planning_timeout_seconds=None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.planning_timeout_seconds = (
+            timeout_seconds
+            if planning_timeout_seconds is None
+            else planning_timeout_seconds
+        )
 
     def is_ready(self):
         try:
@@ -345,9 +373,10 @@ class AgentClient:
                 "project_directory": project_directory,
                 "session_id": session_id,
             },
+            timeout_seconds=self.planning_timeout_seconds,
         )
 
-    def _post_session_json(self, path, action, payload):
+    def _post_session_json(self, path, action, payload, timeout_seconds=None):
         request_id = "session-{}".format(uuid.uuid4().hex)
         envelope = {
             "contract_version": CONTRACT_VERSION,
@@ -362,7 +391,10 @@ class AgentClient:
             headers={"Content-Type": "application/json"},
         )
         try:
-            response = urlopen(request, timeout=self.timeout_seconds)
+            response = urlopen(
+                request,
+                timeout=(self.timeout_seconds if timeout_seconds is None else timeout_seconds),
+            )
             try:
                 envelope = json.loads(response.read().decode("utf-8"))
             finally:
@@ -393,6 +425,11 @@ class AgentClient:
             message = _agent_http_error_message(exc, request_id)
             raise AgentConnectionError(message)
         except (OSError, TypeError, ValueError, URLError) as exc:
+            if action == "analysis.plan" and _is_timeout_error(exc):
+                raise PlanningRequestTimeout(
+                    "规划请求等待超时；任务可能仍在本地 Agent 中运行。"
+                    "为避免重复计费，请勿立即重试同一规划。"
+                )
             raise AgentConnectionError(
                 "Local Agent session request failed: {}".format(exc)
             )
@@ -420,6 +457,18 @@ def _agent_http_error_message(error, request_id):
     ):
         return body["message"]
     return "Local Agent session request failed: {}".format(error)
+
+
+def _is_timeout_error(error):
+    reason = getattr(error, "reason", error)
+    errno = getattr(reason, "errno", getattr(error, "errno", None))
+    text = str(reason).lower()
+    return (
+        isinstance(reason, socket.timeout)
+        or errno in (110, 10060)
+        or "timed out" in text
+        or "10060" in text
+    )
 
 
 def ensure_agent_available(client, start_agent, attempts=20, delay_seconds=0.25):

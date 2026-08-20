@@ -77,6 +77,21 @@ class _PlanClient(_SessionClient):
         }
 
 
+class _TimeoutPlanClient(_SessionClient):
+    def __init__(self, error_type):
+        super().__init__()
+        self.error_type = error_type
+
+    def create_plan(
+        self, project, fingerprint, context, panel, generation, session, message
+    ):
+        self.calls.append(("plan", fingerprint, session, message))
+        raise self.error_type(
+            "规划请求等待超时；任务可能仍在本地 Agent 中运行。"
+            "为避免重复计费，请勿立即重试同一规划。"
+        )
+
+
 class _SwitchingClient:
     def __init__(self, panel):
         self.panel = panel
@@ -217,6 +232,41 @@ def _load_panel_module():
 
 
 class PyRevitPanelTests(unittest.TestCase):
+    def test_planning_timeout_blocks_immediate_duplicate_paid_request(self):
+        panel_module = _load_panel_module()
+        panel = panel_module.AiAreaAssistantPanel.__new__(
+            panel_module.AiAreaAssistantPanel
+        )
+        panel._client = _TimeoutPlanClient(panel_module.PlanningRequestTimeout)
+        panel._dispatch = lambda callback: callback()
+        panel._run_background = lambda callback: callback()
+        panel._session_request_version = 1
+        panel._panel_instance_id = "panel-a"
+        panel._session_project_directory = "C:\\test"
+        panel._session_document_fingerprint = "document-a"
+        panel._session_context_id = "context-a"
+        panel._session_id = "session-a"
+        panel._planning_active = True
+        panel._planning_timeout_pending = False
+        panel._planning_options = []
+        panel._last_message = None
+        for name in (
+            "Transcript", "SendButton", "RetryButton", "AnalyzeButton",
+            "AnalyzeSelectionButton", "ConnectionState", "ConnectionDetail",
+        ):
+            setattr(panel, name, _Control())
+
+        panel._request_plan("扫描当前模型")
+        panel.retry_click(None, None)
+        panel._request_plan("扫描当前模型")
+
+        plan_calls = [call for call in panel._client.calls if call[0] == "plan"]
+        self.assertEqual(len(plan_calls), 1)
+        self.assertTrue(panel._planning_timeout_pending)
+        self.assertFalse(panel.RetryButton.IsEnabled)
+        self.assertFalse(panel.SendButton.IsEnabled)
+        self.assertIn("可能仍在运行", panel.ConnectionDetail.Text)
+
     def test_clickable_recommendation_continues_planning_in_current_session(self):
         panel_module = _load_panel_module()
         panel = panel_module.AiAreaAssistantPanel.__new__(panel_module.AiAreaAssistantPanel)
