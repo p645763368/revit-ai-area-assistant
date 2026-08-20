@@ -1,9 +1,18 @@
 import json
+import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import unittest
+from unittest.mock import patch
 
-from area_assistant_pyrevit.client import AgentClient, ensure_agent_available
+from area_assistant_pyrevit.client import (
+    AgentClient,
+    AgentConnectionError,
+    PlanningRequestTimeout,
+    ensure_agent_available,
+    planning_timeout_from_environment,
+)
 
 
 class _FakeAgentHandler(BaseHTTPRequestHandler):
@@ -31,6 +40,44 @@ class _FakeAgentHandler(BaseHTTPRequestHandler):
         request = json.loads(self.rfile.read(length))
         self.server.request_payload = request
         self.server.requests.append((self.path, request))
+        if self.path == "/v1/plans":
+            delay = getattr(self.server, "plan_delay", 0)
+            if delay:
+                time.sleep(delay)
+            if getattr(self.server, "plan_error", None):
+                body = json.dumps({
+                    "contract_version": "1.0",
+                    "message_type": "error",
+                    "request_id": request["request_id"],
+                    "code": "planning_failed",
+                    "message": self.server.plan_error,
+                    "retryable": True,
+                    "details": {},
+                }).encode("utf-8")
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            payload = {
+                "summary": "已扫描",
+                "question": "采用哪个来源？",
+                "options": [
+                    {"id": "floor", "label": "楼板", "recommended": True, "rationale": "完整", "impact": "继续核对"},
+                    {"id": "wall", "label": "墙体", "recommended": False, "rationale": "备选", "impact": "检查连接"},
+                ],
+            }
+            body = json.dumps({
+                "contract_version": "1.0", "message_type": "response",
+                "request_id": request["request_id"], "status": "completed", "payload": payload,
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.startswith("/v1/sessions/"):
             payload_request = request["payload"]
             if self.path.endswith("/open"):
@@ -135,6 +182,78 @@ class _FakeAgentHandler(BaseHTTPRequestHandler):
 
 
 class PyRevitAgentClientTests(unittest.TestCase):
+    def test_planning_timeout_uses_model_budget_plus_transport_margin(self):
+        client = AgentClient(
+            "http://127.0.0.1:8765",
+            timeout_seconds=2,
+            planning_timeout_seconds=135,
+        )
+
+        class Response:
+            def __init__(self, request):
+                envelope = json.loads(request.data.decode("utf-8"))
+                self.body = json.dumps({
+                    "contract_version": "1.0",
+                    "message_type": "response",
+                    "request_id": envelope["request_id"],
+                    "status": "completed",
+                    "payload": {
+                        "summary": "done",
+                        "question": "choose",
+                        "options": [
+                            {"id": "a", "label": "A", "recommended": True, "rationale": "r", "impact": "i"},
+                            {"id": "b", "label": "B", "recommended": False, "rationale": "r", "impact": "i"},
+                        ],
+                    },
+                }).encode("utf-8")
+
+            def read(self):
+                return self.body
+
+            def close(self):
+                pass
+
+        observed = []
+
+        def open_request(request, timeout):
+            observed.append(timeout)
+            return Response(request)
+
+        with patch.dict(
+            "os.environ", {"AI_AREA_ASSISTANT_TIMEOUT_SECONDS": "120"}
+        ), patch("area_assistant_pyrevit.client.urlopen", side_effect=open_request):
+            self.assertEqual(planning_timeout_from_environment(), 135.0)
+            client.create_plan(
+                "C:\\test", "document-a", "context-a", "panel-a", 1,
+                "session-a", "scan",
+            )
+
+        self.assertEqual(observed, [135])
+
+    def test_true_planning_timeout_is_specific_and_short_requests_stay_short(self):
+        client = AgentClient(
+            "http://127.0.0.1:8765",
+            timeout_seconds=2,
+            planning_timeout_seconds=135,
+        )
+        observed = []
+
+        def timeout_request(request, timeout):
+            observed.append(timeout)
+            raise socket.timeout("timed out")
+
+        with patch("area_assistant_pyrevit.client.urlopen", side_effect=timeout_request):
+            self.assertFalse(client.is_ready())
+            with self.assertRaisesRegex(
+                PlanningRequestTimeout, "任务可能仍在本地 Agent 中运行"
+            ):
+                client.create_plan(
+                    "C:\\test", "document-a", "context-a", "panel-a", 1,
+                    "session-a", "scan",
+                )
+
+        self.assertEqual(observed, [2, 135])
+
     def setUp(self):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeAgentHandler)
         self.server.requests = []
@@ -221,6 +340,44 @@ class PyRevitAgentClientTests(unittest.TestCase):
         for _, request in self.server.requests:
             self.assertEqual(request["contract_version"], "1.0")
             self.assertEqual(request["message_type"], "request")
+
+    def test_panel_client_requests_a_structured_plan_in_the_current_session(self):
+        result = self.client.create_plan(
+            "C:\\test", "document-a", "context-a", "panel-a", 1,
+            "session-a", "扫描当前模型",
+        )
+
+        self.assertEqual(result["question"], "采用哪个来源？")
+        self.assertTrue(result["options"][0]["recommended"])
+        request = self.server.requests[-1][1]
+        self.assertEqual(request["action"], "analysis.plan")
+        self.assertEqual(request["payload"]["session_id"], "session-a")
+
+    def test_plan_can_exceed_short_timeout_but_finish_within_planning_timeout(self):
+        self.server.plan_delay = 0.08
+        client = AgentClient(
+            "http://127.0.0.1:{}".format(self.server.server_port),
+            timeout_seconds=0.03,
+            planning_timeout_seconds=0.2,
+        )
+
+        result = client.create_plan(
+            "C:\\test", "document-a", "context-a", "panel-a", 1,
+            "session-a", "扫描当前模型",
+        )
+
+        self.assertEqual(result["summary"], "已扫描")
+
+    def test_panel_client_surfaces_specific_planning_capability_error(self):
+        self.server.plan_error = (
+            "Visual evidence is unavailable and no structured boundary geometry was collected."
+        )
+
+        with self.assertRaisesRegex(AgentConnectionError, "Visual evidence is unavailable"):
+            self.client.create_plan(
+                "C:\\test", "document-a", "context-a", "panel-a", 1,
+                "session-a", "扫描当前模型",
+            )
 
     def test_panel_client_rejects_malformed_session_action_payloads(self):
         cases = (

@@ -102,3 +102,73 @@ class OpenAICompatibleClient:
             raise ModelApiError(
                 "model_unavailable", "Model API is unavailable.", retryable=True
             ) from exc
+
+    def planning_turn(self, messages, tools):
+        """Return one normalized, non-streaming assistant/tool-call turn."""
+        if not self._config.api_key or not self._config.model:
+            raise ModelApiError(
+                "model_not_configured",
+                "Model API credentials or model name are not configured.",
+                retryable=True,
+            )
+        body = json.dumps(
+            {
+                "model": self._config.model,
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": "auto",
+                "stream": False,
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        request = Request(
+            self._config.base_url.rstrip("/") + "/chat/completions",
+            data=body,
+            headers={
+                "Authorization": "Bearer " + self._config.api_key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self._config.timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            message = payload["choices"][0]["message"]
+            content = message.get("content")
+            if content is not None and not isinstance(content, str):
+                raise _protocol_error()
+            calls = []
+            for item in message.get("tool_calls", []):
+                function = item.get("function")
+                if not isinstance(function, dict):
+                    raise _protocol_error()
+                arguments = json.loads(function.get("arguments", "{}"))
+                if not isinstance(arguments, dict):
+                    raise _protocol_error()
+                name = function.get("name")
+                call_id = item.get("id")
+                if not isinstance(name, str) or not name or not isinstance(call_id, str) or not call_id:
+                    raise _protocol_error()
+                calls.append({"id": call_id, "name": name, "arguments": arguments})
+            if content is None and not calls:
+                raise _protocol_error()
+            return {"content": content, "tool_calls": calls}
+        except ModelApiError:
+            raise
+        except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise _protocol_error() from exc
+        except HTTPError as exc:
+            raise ModelApiError(
+                "model_http_error",
+                "Model API request failed with HTTP status {}.".format(exc.code),
+                retryable=True,
+            ) from exc
+        except (socket.timeout, TimeoutError) as exc:
+            raise ModelApiError(
+                "model_timeout", "Model API request timed out.", retryable=True
+            ) from exc
+        except URLError as exc:
+            raise ModelApiError(
+                "model_unavailable", "Model API is unavailable.", retryable=True
+            ) from exc

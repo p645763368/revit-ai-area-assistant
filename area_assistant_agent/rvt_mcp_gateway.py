@@ -46,10 +46,8 @@ class McpStdioClient:
         self._timeout_seconds = timeout_seconds
         self._messages: queue.Queue[Optional[str]] = queue.Queue()
         self._reader: Optional[threading.Thread] = None
-        self._deadline: Optional[float] = None
 
     def __enter__(self) -> "McpStdioClient":
-        self._deadline = time.monotonic() + self._timeout_seconds
         self._process = subprocess.Popen(
             self._command,
             stdin=subprocess.PIPE,
@@ -99,12 +97,25 @@ class McpStdioClient:
                     raise RuntimeError("rvt-mcp tool failed: " + name) from error
         raise RuntimeError("rvt-mcp tool returned no JSON text: " + name)
 
+    def list_tools(self) -> set[str]:
+        result = self._request("tools/list", {})
+        tools = result.get("tools")
+        if not isinstance(tools, list):
+            raise RuntimeError("rvt-mcp tools/list returned an invalid result")
+        names = set()
+        for tool in tools:
+            if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
+                raise RuntimeError("rvt-mcp tools/list returned an invalid tool")
+            names.add(tool["name"])
+        return names
+
     def _request(self, method: str, params: dict) -> dict:
         request_id = self._next_id
         self._next_id += 1
+        deadline = time.monotonic() + self._timeout_seconds
         self._write({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
         while True:
-            message = self._read()
+            message = self._read(deadline)
             if message.get("id") != request_id:
                 continue
             if "error" in message:
@@ -125,10 +136,10 @@ class McpStdioClient:
         stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
         stdin.flush()
 
-    def _read(self) -> dict:
+    def _read(self, deadline: Optional[float] = None) -> dict:
         timeout = self._timeout_seconds
-        if self._deadline is not None:
-            timeout = max(0.0, self._deadline - time.monotonic())
+        if deadline is not None:
+            timeout = max(0.0, deadline - time.monotonic())
         try:
             line = self._messages.get(timeout=timeout)
         except queue.Empty as error:

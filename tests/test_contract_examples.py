@@ -104,6 +104,24 @@ class SharedContractExamplesTests(unittest.TestCase):
                     self.assertEqual(example["contract_version"], "1.0")
                     self.assertEqual(example["message_type"], message_type)
 
+    def test_planning_action_examples_require_clickable_recommendations(self):
+        registry = contract_registry()
+        for message_type in ("request", "response"):
+            schema = json.loads(
+                (CONTRACTS / "actions" / "planning-{}.schema.json".format(message_type)).read_text(encoding="utf-8")
+            )
+            example = json.loads(
+                (CONTRACTS / "actions" / "examples" / "planning-{}.json".format(message_type)).read_text(encoding="utf-8")
+            )
+            Draft202012Validator.check_schema(schema)
+            Draft202012Validator(schema, registry=registry).validate(example)
+        options = json.loads(
+            (CONTRACTS / "actions" / "examples" / "planning-response.json").read_text(encoding="utf-8")
+        )["payload"]["options"]
+        self.assertGreaterEqual(len(options), 2)
+        self.assertLessEqual(len(options), 4)
+        self.assertEqual(sum(option["recommended"] for option in options), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

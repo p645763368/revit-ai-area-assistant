@@ -12,6 +12,7 @@ from .binding_state_store import BindingStateStore
 from .document_status_runtime import resolve_document_status
 from .model_api import ModelApiError, OpenAICompatibleClient
 from .persistence import SessionRepository
+from .planning import KnowledgeCatalog, PlanningAgent
 from .rvt_mcp_gateway import McpStdioClient
 
 
@@ -69,6 +70,9 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/v1/sessions/revoke":
             self._revoke_session()
+            return
+        if self.path == "/v1/plans":
+            self._create_plan()
             return
         if self.path == "/v1/document-status":
             self._handle_document_status()
@@ -308,6 +312,133 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 400, _error(None, "invalid_request", "Request is invalid.", False)
             )
 
+    def _create_plan(self):
+        request_id = None
+        try:
+            request = self._read_session_request(
+                "analysis.plan",
+                {
+                    "context_id",
+                    "document_fingerprint",
+                    "generation",
+                    "message",
+                    "panel_instance_id",
+                    "project_directory",
+                    "session_id",
+                },
+            )
+            request_id = request["request_id"]
+            message = request["message"]
+            session_id = request["session_id"]
+            if not isinstance(message, str) or not message.strip() or not isinstance(session_id, str):
+                raise ValueError("invalid planning request")
+            repository = self._session_repository(request)
+            document_fingerprint = self._document_fingerprint(request)
+            with self.server.planning_lock:
+                with self.server.session_lock:
+                    self._require_current_session_context(
+                        request, repository, active_session_id=session_id
+                    )
+                    binding = self.server.current_document_status
+                    if (
+                        not isinstance(binding, dict)
+                        or binding.get("binding_status") != "bound"
+                        or binding.get("rvt_mcp_status") != "verified"
+                        or binding.get("document_fingerprint") != document_fingerprint
+                    ):
+                        raise ValueError(
+                            "planning requires the current verified Revit document binding"
+                        )
+                    repository.record_message(
+                        document_fingerprint, session_id, role="user", content=message
+                    )
+                    conversation = repository.load_conversation(
+                        document_fingerprint, session_id
+                    )
+                    session_directory = repository.session_directory(
+                        document_fingerprint, session_id
+                    )
+
+                def audit(tool_name, inputs, output, error):
+                    with self.server.session_lock:
+                        self._require_current_session_context(
+                            request, repository, active_session_id=session_id
+                        )
+                        repository.record_tool_event(
+                            document_fingerprint,
+                            session_id,
+                            tool_name=tool_name,
+                            inputs=inputs,
+                            output=output,
+                            error=error,
+                        )
+
+                def require_planning_context_locked():
+                    self._require_current_session_context(
+                        request, repository, active_session_id=session_id
+                    )
+                    binding = self.server.current_document_status
+                    if (
+                        not isinstance(binding, dict)
+                        or binding.get("binding_status") != "bound"
+                        or binding.get("rvt_mcp_status") != "verified"
+                        or binding.get("document_fingerprint") != document_fingerprint
+                    ):
+                        raise ValueError("planning document context is no longer current")
+
+                def guard_planning_context():
+                    with self.server.session_lock:
+                        require_planning_context_locked()
+
+                screenshot_directory = (session_directory / "screenshots").resolve()
+
+                def commit_screenshot(stable_path, image_bytes):
+                    candidate = Path(stable_path).resolve()
+                    if (
+                        candidate.parent != screenshot_directory
+                        or candidate.suffix.lower() != ".png"
+                    ):
+                        raise ValueError("planning screenshot destination is invalid")
+                    with self.server.session_lock:
+                        require_planning_context_locked()
+                        screenshot_directory.mkdir(parents=True, exist_ok=True)
+                        candidate.write_bytes(image_bytes)
+
+                result = self.server.planning_agent.plan(
+                    conversation,
+                    session_directory,
+                    audit,
+                    document_fingerprint=document_fingerprint,
+                    session_guard=guard_planning_context,
+                    screenshot_commit=commit_screenshot,
+                )
+                payload = result.as_dict()
+                with self.server.session_lock:
+                    self._require_current_session_context(
+                        request, repository, active_session_id=session_id
+                    )
+                    repository.record_message(
+                        document_fingerprint,
+                        session_id,
+                        role="assistant",
+                        content=json.dumps(payload, ensure_ascii=False),
+                    )
+                    machine_state = repository.load_machine_state(
+                        document_fingerprint, session_id
+                    )
+                    machine_state["last_plan"] = payload
+                    repository.save_machine_state(
+                        document_fingerprint, session_id, machine_state
+                    )
+            self._write_json(200, _response(request_id, "completed", payload))
+        except ModelApiError as exc:
+            self._write_json(502, _error(request_id, exc.code, str(exc), exc.retryable))
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            self._write_json(
+                400 if isinstance(exc, (KeyError, TypeError, ValueError)) else 503,
+                _error(request_id, "planning_failed", str(exc), True),
+            )
+
     def _read_session_request(self, action, required_payload_keys):
         length = int(self.headers.get("Content-Length", "0"))
         request = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -407,6 +538,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                         client=client,
                         binding_store=self.server.binding_store,
                     )
+                self.server.current_document_status = response["payload"]
             self._write_json(200, response)
         except (KeyError, RuntimeError, TypeError, ValueError) as exc:
             self._write_json(
@@ -444,6 +576,14 @@ def create_server(config):
     server.binding_store = BindingStateStore()
     server.document_status_lock = threading.Lock()
     server.session_lock = threading.Lock()
+    server.planning_lock = threading.Lock()
     server.session_context = None
     server.panel_generations = {}
+    server.current_document_status = None
+    knowledge_root = Path(__file__).resolve().parents[1] / "knowledge"
+    server.planning_agent = PlanningAgent(
+        server.model_client,
+        KnowledgeCatalog(knowledge_root),
+        McpStdioClient,
+    )
     return server

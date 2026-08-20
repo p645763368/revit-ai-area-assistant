@@ -1,0 +1,484 @@
+"""Read-only Revit planning loop with versioned architectural knowledge."""
+
+import base64
+from contextlib import nullcontext
+from dataclasses import dataclass
+import json
+import math
+from pathlib import Path
+import tempfile
+from typing import Any, Callable, Dict, List, Optional
+import uuid
+
+from .rvt_mcp_gateway import read_current_revit_evidence
+
+
+READ_ONLY_QUERIES = {
+    "overview": """return new {
+    documentTitle = doc.Title,
+    activeViewId = uidoc.ActiveView.Id.Value.ToString(),
+    activeViewName = uidoc.ActiveView.Name,
+    levelCount = new FilteredElementCollector(doc).OfClass(typeof(Level)).GetElementCount(),
+    areaCount = new FilteredElementCollector(doc).OfCategory(BuiltInCategory.OST_Areas).WhereElementIsNotElementType().GetElementCount()
+};""",
+    "levels": """return new FilteredElementCollector(doc)
+    .OfClass(typeof(Level)).Cast<Level>()
+    .OrderBy(x => x.Elevation)
+    .Select(x => new { id = x.Id.Value.ToString(), uniqueId = x.UniqueId, name = x.Name, elevation = x.Elevation })
+    .ToList();""",
+    "area_schemes": """return new FilteredElementCollector(doc)
+    .OfClass(typeof(AreaScheme)).Cast<AreaScheme>()
+    .Select(x => new { id = x.Id.Value.ToString(), uniqueId = x.UniqueId, name = x.Name, isGrossBuildingArea = x.IsGrossBuildingArea })
+    .ToList();""",
+    "boundary_candidates": """Func<Curve, object> curveData = curve => new {
+    curveType = curve.GetType().Name,
+    length = curve.Length,
+    arcCenter = curve is Arc ? new[] { ((Arc)curve).Center.X, ((Arc)curve).Center.Y, ((Arc)curve).Center.Z } : null,
+    arcRadius = curve is Arc ? (double?)((Arc)curve).Radius : null,
+    start = new[] { curve.GetEndPoint(0).X, curve.GetEndPoint(0).Y, curve.GetEndPoint(0).Z },
+    end = new[] { curve.GetEndPoint(1).X, curve.GetEndPoint(1).Y, curve.GetEndPoint(1).Z },
+    tessellated = curve.Tessellate().Select(point => new[] { point.X, point.Y, point.Z }).ToList()
+};
+var categories = new[] { BuiltInCategory.OST_Walls, BuiltInCategory.OST_Floors, BuiltInCategory.OST_Roofs };
+var modelElements = categories.SelectMany(category => new FilteredElementCollector(doc, uidoc.ActiveView.Id)
+    .OfCategory(category).WhereElementIsNotElementType().ToElements());
+var areaBoundaryLines = new FilteredElementCollector(doc, uidoc.ActiveView.Id)
+    .OfCategory(BuiltInCategory.OST_AreaSchemeLines).WhereElementIsNotElementType().ToElements();
+var candidates = new List<object>();
+foreach (var element in modelElements.Concat(areaBoundaryLines).Take(500)) {
+    var profileLoops = new List<object>();
+    var host = element as HostObject;
+    if (host is Floor || host is RoofBase) {
+        foreach (var reference in HostObjectUtils.GetTopFaces(host)) {
+            var face = host.GetGeometryObjectFromReference(reference) as Face;
+            if (face == null) continue;
+            foreach (var loop in face.GetEdgesAsCurveLoops())
+                profileLoops.Add(loop.Select(curve => curveData(curve)).ToList());
+        }
+    }
+    var wall = element as Wall;
+    var location = element.Location as LocationCurve;
+    var areaLine = element as CurveElement;
+    candidates.Add(new {
+        id = element.Id.Value.ToString(), uniqueId = element.UniqueId,
+        category = element.Category == null ? null : element.Category.Name,
+        name = element.Name,
+        wallWidth = wall == null ? (double?)null : wall.Width,
+        locationCurve = location == null ? null : curveData(location.Curve),
+        areaBoundaryCurve = areaLine == null ? null : curveData(areaLine.GeometryCurve),
+        profileLoops = profileLoops
+    });
+}
+return candidates;""",
+}
+
+
+TOOL_DEFINITIONS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "inspect_revit_model",
+            "description": "Read a fixed, non-mutating Revit model summary.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["query"],
+                "properties": {"query": {"enum": sorted(READ_ONLY_QUERIES)}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "capture_revit_view",
+            "description": "Capture a Revit view as read-only visual evidence.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"view_id": {"type": ["integer", "null"]}},
+            },
+        },
+    },
+]
+
+
+class KnowledgeCatalog:
+    def __init__(self, root: Path):
+        self.root = Path(root)
+
+    def load(self) -> Dict[str, List[dict]]:
+        return {
+            "rules": self._load_group("rules"),
+            "cases": self._load_group("cases"),
+        }
+
+    def _load_group(self, group: str) -> List[dict]:
+        items = []
+        for path in sorted((self.root / group).glob("*.json")):
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(value, dict)
+                or not _nonempty(value.get("version"))
+                or not _nonempty(value.get("provenance"))
+                or not _nonempty(value.get("applicability"))
+            ):
+                raise ValueError("knowledge snapshot is missing version metadata: " + str(path))
+            items.append(value)
+        if not items:
+            raise ValueError("no versioned knowledge snapshots found for " + group)
+        return items
+
+
+@dataclass(frozen=True)
+class PlanningResult:
+    summary: str
+    question: str
+    options: List[dict]
+
+    @classmethod
+    def from_dict(cls, value: dict) -> "PlanningResult":
+        if not isinstance(value, dict) or set(value) != {"summary", "question", "options"}:
+            raise ValueError("planning result has an incompatible shape")
+        options = value.get("options")
+        if not _nonempty(value.get("summary")) or not _nonempty(value.get("question")):
+            raise ValueError("planning result text must not be empty")
+        if not isinstance(options, list) or not 2 <= len(options) <= 4:
+            raise ValueError("planning result must contain two to four options")
+        recommended = 0
+        for option in options:
+            if not isinstance(option, dict) or set(option) != {
+                "id", "label", "recommended", "rationale", "impact"
+            }:
+                raise ValueError("planning option has an incompatible shape")
+            if not all(_nonempty(option.get(key)) for key in ("id", "label", "rationale", "impact")):
+                raise ValueError("planning option text must not be empty")
+            if not isinstance(option.get("recommended"), bool):
+                raise ValueError("planning recommendation flag must be boolean")
+            recommended += int(option["recommended"])
+        if recommended != 1:
+            raise ValueError("planning options require one recommendation")
+        return cls(value["summary"].strip(), value["question"].strip(), options)
+
+    def as_dict(self) -> dict:
+        return {"summary": self.summary, "question": self.question, "options": self.options}
+
+
+@dataclass(frozen=True)
+class ToolExecution:
+    audit_output: dict
+    model_output: dict
+    image_data_url: Optional[str] = None
+
+
+class ReadOnlyRevitTools:
+    def __init__(
+        self,
+        client: Any,
+        capture_directory: Path,
+        expected_document_fingerprint: Optional[str] = None,
+        session_guard: Optional[Callable[[], None]] = None,
+        screenshot_commit: Optional[Callable[[Path, bytes], None]] = None,
+    ):
+        self.client = client
+        self.capture_directory = Path(capture_directory)
+        self.expected_document_fingerprint = expected_document_fingerprint
+        self.session_guard = session_guard or (lambda: None)
+        self.screenshot_commit = screenshot_commit or self._commit_screenshot
+
+    def execute(self, name: str, arguments: dict) -> ToolExecution:
+        if name == "inspect_revit_model":
+            if set(arguments) != {"query"} or arguments.get("query") not in READ_ONLY_QUERIES:
+                raise ValueError("read-only Revit query is not allowed")
+            self._guard_current_document()
+            result = self.client.call_tool(
+                "revit_send_code_to_revit", {"code": READ_ONLY_QUERIES[arguments["query"]]}
+            )
+            if not result.get("executed"):
+                raise RuntimeError("rvt-mcp read-only query failed")
+            self._guard_current_document()
+            output = {"query": arguments["query"], "result": result.get("result")}
+            return ToolExecution(output, output)
+        if name == "capture_revit_view":
+            if not isinstance(arguments, dict) or set(arguments) - {"view_id"}:
+                raise ValueError("read-only screenshot arguments are invalid")
+            view_id = arguments.get("view_id")
+            if view_id is not None and (not isinstance(view_id, int) or isinstance(view_id, bool)):
+                raise ValueError("read-only screenshot view id is invalid")
+            self._guard_current_document()
+            filename = "view-{}.png".format(uuid.uuid4().hex)
+            stable_path = self.capture_directory / filename
+            temporary_directory = Path(tempfile.gettempdir()) / "RevitAIAreaAssistant"
+            temporary_directory.mkdir(parents=True, exist_ok=True)
+            output_path = temporary_directory / filename
+            payload = {"output_path": str(output_path), "pixel_size": 1600, "image_format": "png"}
+            if view_id is not None:
+                payload["view_id"] = view_id
+            saved_path = output_path
+            try:
+                result = self.client.call_tool("capture_view_image", payload)
+                saved_path = Path(result.get("saved_path", output_path))
+                if saved_path.is_symlink() or saved_path.resolve() != output_path.resolve():
+                    raise RuntimeError("rvt-mcp screenshot path escaped its staging file")
+                image_bytes = saved_path.read_bytes()
+                self._guard_current_document()
+                self.screenshot_commit(stable_path, image_bytes)
+            finally:
+                try:
+                    output_path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as error:
+                    raise RuntimeError(
+                        "rvt-mcp screenshot staging file could not be removed"
+                    ) from error
+            if not stable_path.is_file():
+                raise RuntimeError("rvt-mcp screenshot could not be retained")
+            audit = {"view_id": result.get("view_id", view_id), "saved_path": str(stable_path)}
+            return ToolExecution(
+                audit,
+                {"view_id": audit["view_id"], "image_attached": True},
+                "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii"),
+            )
+        raise ValueError("tool is outside the read-only Revit boundary")
+
+    def _guard_current_document(self) -> None:
+        self.session_guard()
+        evidence = read_current_revit_evidence(self.client)
+        if (
+            self.expected_document_fingerprint is not None
+            and evidence.document_fingerprint != self.expected_document_fingerprint
+        ):
+            raise RuntimeError("rvt-mcp current document changed during planning")
+        self.session_guard()
+
+    def _commit_screenshot(self, stable_path: Path, image_bytes: bytes) -> None:
+        self.session_guard()
+        self.capture_directory.mkdir(parents=True, exist_ok=True)
+        stable_path.write_bytes(image_bytes)
+
+
+class PlanningAgent:
+    def __init__(self, model_client: Any, knowledge: KnowledgeCatalog, mcp_client_factory: Callable[[], Any], max_turns: int = 6):
+        self.model_client = model_client
+        self.knowledge = knowledge
+        self.mcp_client_factory = mcp_client_factory
+        self.max_turns = max_turns
+
+    def plan(
+        self,
+        conversation: List[dict],
+        session_directory: Path,
+        audit: Callable[[str, dict, Any, Optional[str]], None],
+        document_fingerprint: Optional[str] = None,
+        session_guard: Optional[Callable[[], None]] = None,
+        screenshot_commit: Optional[Callable[[Path, bytes], None]] = None,
+    ) -> PlanningResult:
+        knowledge = self.knowledge.load()
+        messages = [{
+            "role": "system",
+            "content": (
+                "You are the read-only planning stage of a Revit GFA assistant. "
+                "Use tools whenever model evidence or a screenshot is needed. Screenshots are supporting evidence only; geometry queries remain authoritative. "
+                "If screenshot capture is unavailable, do not retry it in the same plan; continue from structured geometry and clearly state the visual-evidence limitation. "
+                "Never propose a final regulatory factor without user confirmation. Return only JSON with summary, question, and 2-4 options. "
+                "Exactly one option must be recommended; every option needs id, label, recommended, rationale, and impact.\nKnowledge:\n"
+                + json.dumps(knowledge, ensure_ascii=False)
+            ),
+        }] + list(conversation)
+        candidate = self.mcp_client_factory()
+        context = candidate if hasattr(candidate, "__enter__") else nullcontext(candidate)
+        with context as client:
+            available_mcp_tools = client.list_tools()
+            capture_available = "capture_view_image" in available_mcp_tools
+            tool_definitions = [TOOL_DEFINITIONS[0]]
+            if capture_available:
+                tool_definitions.append(TOOL_DEFINITIONS[1])
+            else:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "Visual evidence is unavailable because this MCP connection does "
+                        "not provide capture_view_image. Do not request a screenshot. You "
+                        "must successfully inspect boundary_candidates before recommending "
+                        "any source; otherwise ask the user to restore evidence capability."
+                    ),
+                })
+            tools = ReadOnlyRevitTools(
+                client,
+                Path(session_directory) / "screenshots",
+                expected_document_fingerprint=document_fingerprint,
+                session_guard=session_guard,
+                screenshot_commit=screenshot_commit,
+            )
+            screenshot_failure = (
+                None if capture_available
+                else "capture_view_image is not available on this MCP connection"
+            )
+            structured_geometry_available = False
+            if screenshot_failure is not None:
+                audit("capture_revit_view", {}, None, screenshot_failure)
+            for _ in range(self.max_turns):
+                turn = self.model_client.planning_turn(messages, tool_definitions)
+                calls = turn.get("tool_calls", [])
+                if calls:
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": turn.get("content"),
+                            "tool_calls": [
+                                {
+                                    "id": call["id"],
+                                    "type": "function",
+                                    "function": {
+                                        "name": call["name"],
+                                        "arguments": json.dumps(
+                                            call["arguments"], ensure_ascii=False
+                                        ),
+                                    },
+                                }
+                                for call in calls
+                            ],
+                        }
+                    )
+                    image_data_urls = []
+                    for call in calls:
+                        name = call.get("name")
+                        arguments = call.get("arguments")
+                        if not isinstance(arguments, dict):
+                            raise ValueError("model tool arguments must be an object")
+                        if name == "capture_revit_view" and screenshot_failure is not None:
+                            unavailable = {
+                                "visual_evidence": {
+                                    "available": False,
+                                    "reason": "capture_failed",
+                                    "instruction": (
+                                        "Do not retry capture in this plan. Continue from "
+                                        "structured geometry and disclose the limitation."
+                                    ),
+                                }
+                            }
+                            audit(name, arguments, None, screenshot_failure)
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": call.get("id"),
+                                "content": json.dumps(unavailable, ensure_ascii=False),
+                            })
+                            continue
+                        try:
+                            execution = tools.execute(name, arguments)
+                            audit(name, arguments, execution.audit_output, None)
+                            if (
+                                name == "inspect_revit_model"
+                                and arguments.get("query") == "boundary_candidates"
+                            ):
+                                structured_geometry_available = _has_valid_boundary_geometry(
+                                    execution.model_output.get("result")
+                                )
+                        except Exception as error:
+                            audit(name or "unknown", arguments, None, str(error))
+                            if name != "capture_revit_view" or not _is_capture_unavailable(error):
+                                raise
+                            screenshot_failure = "visual evidence capture failed"
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": call.get("id"),
+                                "content": json.dumps(
+                                    {
+                                        "visual_evidence": {
+                                            "available": False,
+                                            "reason": "capture_failed",
+                                            "instruction": (
+                                                "Do not retry capture in this plan. Continue "
+                                                "from structured geometry and disclose the limitation."
+                                            ),
+                                        }
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            })
+                            continue
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": call.get("id"),
+                            "content": json.dumps(execution.model_output, ensure_ascii=False),
+                        })
+                        if execution.image_data_url:
+                            image_data_urls.append(execution.image_data_url)
+                    for image_data_url in image_data_urls:
+                        messages.append({
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "Inspect this captured Revit view as supporting evidence."},
+                                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                                ],
+                            })
+                    continue
+                content = turn.get("content")
+                if not isinstance(content, str):
+                    raise ValueError("model did not return a planning result")
+                result = PlanningResult.from_dict(json.loads(content))
+                if screenshot_failure is not None and not structured_geometry_available:
+                    raise RuntimeError(
+                        "Visual evidence is unavailable and no structured boundary geometry "
+                        "was collected. Restore capture_view_image or collect "
+                        "boundary_candidates before requesting recommendations."
+                    )
+                return result
+        raise RuntimeError("planning tool loop exceeded its turn limit")
+
+
+def _nonempty(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _is_capture_unavailable(error: Exception) -> bool:
+    message = str(error)
+    return (
+        isinstance(error, TimeoutError)
+        or message == "rvt-mcp response timed out"
+        or message == "MCP request failed (-32602): Unknown tool: 'capture_view_image'"
+    )
+
+
+def _has_valid_boundary_geometry(value: Any) -> bool:
+    if not isinstance(value, list):
+        return False
+    for candidate in value:
+        if not isinstance(candidate, dict):
+            continue
+        curves = [candidate.get("locationCurve"), candidate.get("areaBoundaryCurve")]
+        profile_loops = candidate.get("profileLoops")
+        if isinstance(profile_loops, list):
+            for loop in profile_loops:
+                if isinstance(loop, list):
+                    curves.extend(loop)
+        if any(_is_valid_boundary_curve(curve) for curve in curves):
+            return True
+    return False
+
+
+def _is_valid_boundary_curve(value: Any) -> bool:
+    if not isinstance(value, dict) or not _nonempty(value.get("curveType")):
+        return False
+    length = value.get("length")
+    if (
+        not isinstance(length, (int, float))
+        or isinstance(length, bool)
+        or not math.isfinite(length)
+        or length <= 0
+    ):
+        return False
+    return _is_xyz(value.get("start")) and _is_xyz(value.get("end"))
+
+
+def _is_xyz(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == 3
+        and all(
+            isinstance(item, (int, float))
+            and not isinstance(item, bool)
+            and math.isfinite(item)
+            for item in value
+        )
+    )

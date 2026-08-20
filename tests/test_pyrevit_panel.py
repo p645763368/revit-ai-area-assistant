@@ -1,4 +1,6 @@
+import contextlib
 import importlib
+import io
 import sys
 import threading
 import types
@@ -58,6 +60,36 @@ class _SessionClient:
     def revoke_session(self, panel_instance_id, generation, context_id):
         self.calls.append(("revoke", panel_instance_id, generation, context_id))
         return {"revoked": True}
+
+
+class _PlanClient(_SessionClient):
+    def create_plan(
+        self, project, fingerprint, context, panel, generation, session, message
+    ):
+        self.calls.append(("plan", fingerprint, session, message))
+        return {
+            "summary": "已比较候选来源。",
+            "question": "采用哪个来源？",
+            "options": [
+                {"id": "floor", "label": "楼板", "recommended": True, "rationale": "轮廓完整", "impact": "继续精确核对"},
+                {"id": "wall", "label": "墙体", "recommended": False, "rationale": "可交叉验证", "impact": "检查墙连接"},
+            ],
+        }
+
+
+class _TimeoutPlanClient(_SessionClient):
+    def __init__(self, error_type):
+        super().__init__()
+        self.error_type = error_type
+
+    def create_plan(
+        self, project, fingerprint, context, panel, generation, session, message
+    ):
+        self.calls.append(("plan", fingerprint, session, message))
+        raise self.error_type(
+            "规划请求等待超时；任务可能仍在本地 Agent 中运行。"
+            "为避免重复计费，请勿立即重试同一规划。"
+        )
 
 
 class _SwitchingClient:
@@ -200,6 +232,74 @@ def _load_panel_module():
 
 
 class PyRevitPanelTests(unittest.TestCase):
+    def test_planning_timeout_blocks_immediate_duplicate_paid_request(self):
+        panel_module = _load_panel_module()
+        panel = panel_module.AiAreaAssistantPanel.__new__(
+            panel_module.AiAreaAssistantPanel
+        )
+        panel._client = _TimeoutPlanClient(panel_module.PlanningRequestTimeout)
+        panel._dispatch = lambda callback: callback()
+        panel._run_background = lambda callback: callback()
+        panel._session_request_version = 1
+        panel._panel_instance_id = "panel-a"
+        panel._session_project_directory = "C:\\test"
+        panel._session_document_fingerprint = "document-a"
+        panel._session_context_id = "context-a"
+        panel._session_id = "session-a"
+        panel._planning_active = True
+        panel._planning_timeout_pending = False
+        panel._planning_options = []
+        panel._last_message = None
+        for name in (
+            "Transcript", "SendButton", "RetryButton", "AnalyzeButton",
+            "AnalyzeSelectionButton", "ConnectionState", "ConnectionDetail",
+        ):
+            setattr(panel, name, _Control())
+
+        panel._request_plan("扫描当前模型")
+        panel.retry_click(None, None)
+        panel._request_plan("扫描当前模型")
+
+        plan_calls = [call for call in panel._client.calls if call[0] == "plan"]
+        self.assertEqual(len(plan_calls), 1)
+        self.assertTrue(panel._planning_timeout_pending)
+        self.assertFalse(panel.RetryButton.IsEnabled)
+        self.assertFalse(panel.SendButton.IsEnabled)
+        self.assertIn("可能仍在运行", panel.ConnectionDetail.Text)
+
+    def test_clickable_recommendation_continues_planning_in_current_session(self):
+        panel_module = _load_panel_module()
+        panel = panel_module.AiAreaAssistantPanel.__new__(panel_module.AiAreaAssistantPanel)
+        panel._client = _PlanClient()
+        panel._dispatch = lambda callback: callback()
+        panel._run_background = lambda callback: callback()
+        panel._session_request_version = 1
+        panel._panel_instance_id = "panel-a"
+        panel._session_project_directory = "C:\\test"
+        panel._session_document_fingerprint = "document-a"
+        panel._session_context_id = "context-a"
+        panel._session_id = "session-a"
+        panel._planning_active = True
+        panel._planning_options = []
+        for name in (
+            "Transcript", "SendButton", "RetryButton", "AnalyzeButton",
+            "ConnectionState", "ConnectionDetail", "StructuredSummary",
+            "StructuredQuestion", "Option1Button", "Option2Button",
+            "Option3Button", "Option4Button",
+        ):
+            setattr(panel, name, _Control())
+
+        panel._request_plan("扫描当前模型")
+        panel.option_1_click(None, None)
+
+        self.assertEqual(panel.StructuredQuestion.Text, "采用哪个来源？")
+        self.assertIn("★ 楼板", panel.Option1Button.Content)
+        self.assertEqual(
+            [call[3] for call in panel._client.calls if call[0] == "plan"],
+            ["扫描当前模型", "选择方案：楼板（floor）"],
+        )
+        self.assertIn("依据：轮廓完整", panel.Transcript.Text)
+
     def test_interrupted_reply_unblocks_panel_and_enables_retry(self):
         panel_module = _load_panel_module()
         panel = panel_module.AiAreaAssistantPanel.__new__(
@@ -719,6 +819,62 @@ class PyRevitPanelTests(unittest.TestCase):
         self.assertIsNone(panel._selection_document)
         self.assertFalse(panel.AnalyzeSelectionButton.IsEnabled)
         self.assertEqual(panel.SelectionState.Text, "未选择")
+
+    def test_busy_planning_disables_selected_element_agent_handoff(self):
+        panel_module = _load_panel_module()
+        panel = panel_module.AiAreaAssistantPanel.__new__(
+            panel_module.AiAreaAssistantPanel
+        )
+        panel._session_id = "session-a"
+        panel._selected_elements = [object()]
+        panel.SendButton = _Control()
+        panel.RetryButton = _Control()
+        panel.AnalyzeButton = _Control()
+        panel.AnalyzeSelectionButton = _Control()
+
+        panel._set_busy(False)
+        self.assertTrue(panel.AnalyzeSelectionButton.IsEnabled)
+
+        panel._set_busy(True)
+        self.assertFalse(panel.SendButton.IsEnabled)
+        self.assertFalse(panel.AnalyzeButton.IsEnabled)
+        self.assertFalse(panel.AnalyzeSelectionButton.IsEnabled)
+
+    def test_unexpected_background_error_is_dispatched_without_console_output(self):
+        panel_module = _load_panel_module()
+        panel = panel_module.AiAreaAssistantPanel.__new__(
+            panel_module.AiAreaAssistantPanel
+        )
+        dispatched = threading.Event()
+        observed = []
+        escaped = []
+
+        def dispatch(callback):
+            callback()
+            dispatched.set()
+
+        def fail(message, retryable):
+            observed.append((message, retryable))
+
+        def explode():
+            raise RuntimeError("capture timed out")
+
+        panel._dispatch = dispatch
+        panel._reply_failed = fail
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch.object(
+            threading,
+            "excepthook",
+            lambda args: escaped.append(args.exc_value),
+        ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            panel._run_background(explode)
+            self.assertTrue(dispatched.wait(1))
+
+        self.assertEqual(observed, [("后台任务失败：capture timed out", True)])
+        self.assertEqual(escaped, [])
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
 
 
 if __name__ == "__main__":

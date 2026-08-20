@@ -288,6 +288,30 @@ class SessionRepository:
             raise ValueError("stored session_state must be an object")
         return machine_state
 
+    def load_conversation(
+        self, document_fingerprint: str, session_id: str
+    ) -> list[Dict[str, str]]:
+        """Load the redacted conversation through the durable session boundary."""
+        handle, _ = self._load_session(document_fingerprint, session_id)
+        path = handle.directory / "conversation.jsonl"
+        if not path.is_file():
+            return []
+        messages = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            record = json.loads(line)
+            role = record.get("role")
+            content = record.get("content")
+            if role not in {"user", "assistant", "system"} or not isinstance(content, str):
+                raise ValueError("stored conversation is invalid")
+            messages.append({"role": role, "content": content})
+        return messages
+
+    def session_directory(
+        self, document_fingerprint: str, session_id: str
+    ) -> Path:
+        handle, _ = self._load_session(document_fingerprint, session_id)
+        return handle.directory
+
     def _load_session(
         self, document_fingerprint: str, session_id: str
     ) -> Tuple[SessionHandle, Dict[str, Any]]:
