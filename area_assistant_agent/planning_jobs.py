@@ -10,6 +10,9 @@ import threading
 from typing import Any, Callable, Dict, Optional, Tuple
 import uuid
 
+from .persistence import redact_sensitive
+from .planning import PlanningResult
+
 
 IDENTITY_FIELDS = (
     "panel_instance_id",
@@ -118,13 +121,16 @@ class PlanningJobRegistry:
                         current_state, state
                     )
                 )
-            record["state"] = state
-            record["stage"] = stage
-            record["updated_at"] = self._timestamp()
-            record["result"] = deepcopy(result)
-            record["error"] = deepcopy(error)
-            self._write_record(record)
-            return self._snapshot(record)
+            candidate = deepcopy(record)
+            candidate["state"] = state
+            candidate["stage"] = stage
+            candidate["updated_at"] = self._timestamp()
+            candidate["result"], candidate["error"] = self._safe_payload(
+                state, result, error
+            )
+            self._write_record(candidate)
+            self._jobs[job_id] = candidate
+            return self._snapshot(candidate)
 
     def cancel(
         self, job_id: str, identity: Dict[str, Any]
@@ -136,13 +142,15 @@ class PlanningJobRegistry:
                 return None
             if record["state"] in TERMINAL_STATES:
                 return self._snapshot(record)
-            record["state"] = "cancelled"
-            record["stage"] = "finished"
-            record["updated_at"] = self._timestamp()
-            record["result"] = None
-            record["error"] = None
-            self._write_record(record)
-            return self._snapshot(record)
+            candidate = deepcopy(record)
+            candidate["state"] = "cancelled"
+            candidate["stage"] = "finished"
+            candidate["updated_at"] = self._timestamp()
+            candidate["result"] = None
+            candidate["error"] = None
+            self._write_record(candidate)
+            self._jobs[job_id] = candidate
+            return self._snapshot(candidate)
 
     def is_active(self, job_id: str) -> bool:
         with self._lock:
@@ -157,15 +165,18 @@ class PlanningJobRegistry:
                     self._validate_record(record, path)
                 except (OSError, TypeError, ValueError, json.JSONDecodeError):
                     continue
+                record = self._sanitize_loaded_record(record)
                 if record["state"] in NON_TERMINAL_STATES:
-                    record["state"] = "interrupted"
-                    record["error"] = {
+                    candidate = deepcopy(record)
+                    candidate["state"] = "interrupted"
+                    candidate["error"] = {
                         "code": "agent_restarted",
                         "message": "The Agent restarted before planning completed.",
                         "retryable": True,
                     }
-                    record["updated_at"] = self._timestamp()
-                    self._write_record(record)
+                    candidate["updated_at"] = self._timestamp()
+                    self._write_record(candidate)
+                    record = candidate
                 job_id = record["job_id"]
                 idempotency_key = record["idempotency_key"]
                 self._jobs[job_id] = record
@@ -187,6 +198,66 @@ class PlanningJobRegistry:
             raise ValueError("stored planning job has an invalid identity")
         if not isinstance(record["idempotency_key"], str):
             raise ValueError("stored planning job has an invalid idempotency key")
+
+    def _sanitize_loaded_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        candidate = deepcopy(record)
+        candidate["result"], candidate["error"] = self._safe_payload(
+            record["state"], record["result"], record["error"]
+        )
+        if candidate != record:
+            self._write_record(candidate)
+        return candidate
+
+    @staticmethod
+    def _safe_payload(
+        state: str, result: Optional[Any], error: Optional[Any]
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        if state == "completed":
+            if error is not None:
+                raise ValueError("completed planning job cannot contain an error")
+            return PlanningJobRegistry._sanitize_result(result), None
+        if state == "failed":
+            if result is not None:
+                raise ValueError("failed planning job cannot contain a result")
+            return None, PlanningJobRegistry._sanitize_error(error)
+        if result is not None or error is not None:
+            raise ValueError("non-terminal planning job contains a payload")
+        return None, None
+
+    @staticmethod
+    def _sanitize_result(result: Any) -> Dict[str, Any]:
+        if result is None:
+            raise ValueError("completed planning job requires a result")
+        if not isinstance(result, dict) and hasattr(result, "as_dict"):
+            result = result.as_dict()
+        try:
+            validated = PlanningResult.from_dict(deepcopy(result)).as_dict()
+        except (AttributeError, TypeError, ValueError) as error:
+            raise ValueError("planning result is not contract-safe") from error
+        return redact_sensitive(validated)
+
+    @staticmethod
+    def _sanitize_error(error: Any) -> Dict[str, Any]:
+        if not isinstance(error, dict) or set(error) != {
+            "code",
+            "message",
+            "retryable",
+        }:
+            raise ValueError("planning error is not contract-safe")
+        sanitized = redact_sensitive(deepcopy(error))
+        if (
+            not isinstance(sanitized["code"], str)
+            or not sanitized["code"].strip()
+            or not isinstance(sanitized["message"], str)
+            or not sanitized["message"].strip()
+            or type(sanitized["retryable"]) is not bool
+        ):
+            raise ValueError("planning error is not contract-safe")
+        return {
+            "code": sanitized["code"],
+            "message": sanitized["message"],
+            "retryable": sanitized["retryable"],
+        }
 
     def _record_for(self, job_id: str) -> Dict[str, Any]:
         try:
