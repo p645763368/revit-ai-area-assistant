@@ -4,6 +4,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import unittest
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import patch
 
 from area_assistant_pyrevit.client import (
@@ -17,6 +18,40 @@ from area_assistant_pyrevit.client import (
 
 class _FakeAgentHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/v1/plan-jobs/"):
+            self.server.requests.append(
+                (self.path, {"query": parse_qs(parsed.query, keep_blank_values=True)})
+            )
+            if getattr(self.server, "plan_job_error", False):
+                body = json.dumps({
+                    "contract_version": "1.0",
+                    "message_type": "error",
+                    "request_id": "plan-job-status",
+                    "code": "job_not_found",
+                    "message": "Planning job was not found.",
+                    "retryable": False,
+                }).encode("utf-8")
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            snapshot = self.server.plan_job_snapshots["get"]
+            body = json.dumps({
+                "contract_version": "1.0",
+                "message_type": "response",
+                "request_id": "plan-job-status",
+                "status": "accepted" if snapshot["state"] in ("queued", "running") else "completed",
+                "payload": snapshot,
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         body = json.dumps(
             {
                 "contract_version": "1.0",
@@ -40,6 +75,36 @@ class _FakeAgentHandler(BaseHTTPRequestHandler):
         request = json.loads(self.rfile.read(length))
         self.server.request_payload = request
         self.server.requests.append((self.path, request))
+        if self.path == "/v1/plan-jobs":
+            snapshot = self.server.plan_job_snapshots["submit"]
+            body = json.dumps({
+                "contract_version": "1.0",
+                "message_type": "response",
+                "request_id": request["request_id"],
+                "status": "accepted",
+                "payload": snapshot,
+            }).encode("utf-8")
+            self.send_response(202)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == "/v1/plan-jobs/job-a/cancel":
+            snapshot = self.server.plan_job_snapshots["cancel"]
+            body = json.dumps({
+                "contract_version": "1.0",
+                "message_type": "response",
+                "request_id": request["request_id"],
+                "status": "cancelled" if snapshot["state"] == "cancelled" else "completed",
+                "payload": snapshot,
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/v1/plans":
             delay = getattr(self.server, "plan_delay", 0)
             if delay:
@@ -257,6 +322,20 @@ class PyRevitAgentClientTests(unittest.TestCase):
     def setUp(self):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeAgentHandler)
         self.server.requests = []
+        snapshot = {
+            "job_id": "job-a",
+            "state": "queued",
+            "stage": "accepted",
+            "created_at": "2026-08-21T00:00:00+00:00",
+            "updated_at": "2026-08-21T00:00:00+00:00",
+            "result": None,
+            "error": None,
+        }
+        self.server.plan_job_snapshots = {
+            "submit": snapshot,
+            "get": dict(snapshot, state="running", stage="reading_model"),
+            "cancel": dict(snapshot, state="cancelled", stage="finished"),
+        }
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.client = AgentClient(
@@ -352,6 +431,111 @@ class PyRevitAgentClientTests(unittest.TestCase):
         request = self.server.requests[-1][1]
         self.assertEqual(request["action"], "analysis.plan")
         self.assertEqual(request["payload"]["session_id"], "session-a")
+
+    def test_panel_client_submits_polls_and_cancels_plan_jobs_with_short_requests(self):
+        identity = {
+            "project_directory": "C:\\test",
+            "document_fingerprint": "document-a",
+            "context_id": "context-a",
+            "panel_instance_id": "panel-a",
+            "generation": 1,
+            "session_id": "session-a",
+        }
+
+        with patch(
+            "area_assistant_pyrevit.client.urlopen",
+            wraps=__import__("area_assistant_pyrevit.client", fromlist=["urlopen"]).urlopen,
+        ) as open_request:
+            submitted = self.client.submit_plan_job(
+                identity["project_directory"],
+                identity["document_fingerprint"],
+                identity["context_id"],
+                identity["panel_instance_id"],
+                identity["generation"],
+                identity["session_id"],
+                "scan",
+            )
+            polled = self.client.get_plan_job("job-a", identity)
+            cancelled = self.client.cancel_plan_job("job-a", identity)
+
+        self.assertEqual(submitted["state"], "queued")
+        self.assertEqual(polled["state"], "running")
+        self.assertEqual(cancelled["state"], "cancelled")
+        self.assertEqual(
+            [call.kwargs["timeout"] for call in open_request.call_args_list],
+            [self.client.timeout_seconds] * 3,
+        )
+        submit_request = self.server.requests[-3][1]
+        poll_request = self.server.requests[-2][1]
+        cancel_request = self.server.requests[-1][1]
+        self.assertEqual(submit_request["action"], "analysis.plan.submit")
+        self.assertEqual(submit_request["payload"], dict(identity, message="scan"))
+        self.assertEqual(poll_request["query"], {key: [str(value)] for key, value in identity.items()})
+        self.assertEqual(cancel_request["action"], "analysis.plan.cancel")
+        self.assertEqual(cancel_request["payload"], identity)
+
+    def test_panel_client_rejects_invalid_job_snapshots_and_propagates_versioned_errors(self):
+        identity = {
+            "project_directory": "C:\\test",
+            "document_fingerprint": "document-a",
+            "context_id": "context-a",
+            "panel_instance_id": "panel-a",
+            "generation": 1,
+            "session_id": "session-a",
+        }
+        self.server.plan_job_snapshots["get"] = dict(
+            self.server.plan_job_snapshots["get"], error={"code": "private", "message": "bad", "retryable": True}
+        )
+
+        with self.assertRaisesRegex(AgentConnectionError, "incompatible v1 response"):
+            self.client.get_plan_job("job-a", identity)
+
+        self.server.plan_job_error = True
+        with self.assertRaisesRegex(AgentConnectionError, "Planning job was not found"):
+            self.client.get_plan_job("job-a", identity)
+
+    def test_plan_job_poll_timeout_raises_connection_error_without_hidden_retry(self):
+        identity = {
+            "project_directory": "C:\\test",
+            "document_fingerprint": "document-a",
+            "context_id": "context-a",
+            "panel_instance_id": "panel-a",
+            "generation": 1,
+            "session_id": "session-a",
+        }
+
+        class Response:
+            def read(self):
+                return json.dumps({
+                    "contract_version": "1.0",
+                    "message_type": "response",
+                    "request_id": "plan-job-status",
+                    "status": "accepted",
+                    "payload": self_server.plan_job_snapshots["get"],
+                }).encode("utf-8")
+
+            def close(self):
+                pass
+
+        self_server = self.server
+        requests = []
+
+        def poll_request(request, timeout):
+            requests.append((request.full_url, timeout))
+            if len(requests) == 1:
+                raise socket.timeout("timed out")
+            return Response()
+
+        with patch("area_assistant_pyrevit.client.urlopen", side_effect=poll_request):
+            with self.assertRaises(AgentConnectionError) as raised:
+                self.client.get_plan_job("job-a", identity)
+            snapshot = self.client.get_plan_job("job-a", identity)
+
+        self.assertNotIsInstance(raised.exception, PlanningRequestTimeout)
+        self.assertEqual(snapshot["state"], "running")
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[0], requests[1])
+        self.assertEqual(self.server.requests, [])
 
     def test_plan_can_exceed_short_timeout_but_finish_within_planning_timeout(self):
         self.server.plan_delay = 0.08

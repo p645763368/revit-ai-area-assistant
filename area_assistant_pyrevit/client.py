@@ -2,14 +2,17 @@
 
 import json
 import os
+import re
 import socket
 import time
 import uuid
 
 try:
     from urllib.error import HTTPError, URLError
+    from urllib.parse import urlencode
     from urllib.request import Request, urlopen
 except ImportError:  # IronPython 2.7 in pyRevit
+    from urllib import urlencode
     from urllib2 import HTTPError, Request, URLError, urlopen
 
 from area_assistant_agent import CONTRACT_VERSION, SERVICE_NAME
@@ -18,6 +21,11 @@ try:
     STRING_TYPES = (basestring,)  # type: ignore[name-defined]
 except NameError:
     STRING_TYPES = (str,)
+
+try:
+    INTEGER_TYPES = (int, long)  # type: ignore[name-defined]
+except NameError:
+    INTEGER_TYPES = (int,)
 
 
 class AgentConnectionError(Exception):
@@ -42,6 +50,102 @@ def planning_timeout_from_environment(margin_seconds=15.0):
 
 def _nonempty_string(value):
     return isinstance(value, STRING_TYPES) and bool(value)
+
+
+_PLAN_JOB_STATES = {
+    "queued", "running", "completed", "failed", "cancelled", "interrupted"
+}
+_PLAN_JOB_STAGES = {
+    "accepted",
+    "validating_context",
+    "reading_model",
+    "capturing_evidence",
+    "requesting_model",
+    "validating_result",
+    "persisting_result",
+    "finished",
+}
+_PLAN_JOB_IDENTITY_FIELDS = {
+    "project_directory",
+    "document_fingerprint",
+    "context_id",
+    "panel_instance_id",
+    "generation",
+    "session_id",
+}
+_ISO_TIMESTAMP = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+)
+
+
+def _valid_iso_timestamp(value):
+    if not _nonempty_string(value) or not _ISO_TIMESTAMP.match(value):
+        return False
+    try:
+        time.strptime(value[:19], "%Y-%m-%dT%H:%M:%S")
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _valid_plan_job_identity(identity):
+    return (
+        isinstance(identity, dict)
+        and set(identity) == _PLAN_JOB_IDENTITY_FIELDS
+        and all(
+            _nonempty_string(identity.get(key))
+            for key in (
+                "project_directory",
+                "document_fingerprint",
+                "context_id",
+                "panel_instance_id",
+                "session_id",
+            )
+        )
+        and isinstance(identity.get("generation"), INTEGER_TYPES)
+        and not isinstance(identity.get("generation"), bool)
+        and identity["generation"] >= 0
+    )
+
+
+def _valid_plan_job_snapshot(payload):
+    if (
+        not isinstance(payload, dict)
+        or set(payload)
+        != {
+            "job_id",
+            "state",
+            "stage",
+            "created_at",
+            "updated_at",
+            "result",
+            "error",
+        }
+        or not _nonempty_string(payload.get("job_id"))
+        or payload.get("state") not in _PLAN_JOB_STATES
+        or payload.get("stage") not in _PLAN_JOB_STAGES
+        or not _valid_iso_timestamp(payload.get("created_at"))
+        or not _valid_iso_timestamp(payload.get("updated_at"))
+    ):
+        return False
+    state = payload["state"]
+    if state == "completed":
+        return payload.get("error") is None and _valid_session_payload(
+            "analysis.plan", payload.get("result")
+        )
+    if state in ("failed", "interrupted"):
+        error = payload.get("error")
+        return (
+            payload.get("result") is None
+            and isinstance(error, dict)
+            and set(error) == {"code", "message", "retryable"}
+            and _nonempty_string(error.get("code"))
+            and _nonempty_string(error.get("message"))
+            and bool(error["code"].strip())
+            and bool(error["message"].strip())
+            and isinstance(error.get("retryable"), bool)
+        )
+    return payload.get("result") is None and payload.get("error") is None
 
 
 def _valid_session_payload(action, payload):
@@ -351,6 +455,51 @@ class AgentClient:
             },
         )
 
+    def submit_plan_job(
+        self,
+        project_directory,
+        document_fingerprint,
+        context_id,
+        panel_instance_id,
+        generation,
+        session_id,
+        message,
+    ):
+        return self._post_plan_job(
+            "/v1/plan-jobs",
+            "analysis.plan.submit",
+            {
+                "context_id": context_id,
+                "document_fingerprint": document_fingerprint,
+                "generation": generation,
+                "message": message,
+                "panel_instance_id": panel_instance_id,
+                "project_directory": project_directory,
+                "session_id": session_id,
+            },
+            "submit",
+        )
+
+    def get_plan_job(self, job_id, identity):
+        if not _nonempty_string(job_id) or not _valid_plan_job_identity(identity):
+            raise AgentConnectionError("Planning job request is invalid.")
+        request = Request(
+            self.base_url + "/v1/plan-jobs/{}?{}".format(
+                job_id, urlencode(identity)
+            )
+        )
+        return self._read_plan_job_response(request, "plan-job-status", "get")
+
+    def cancel_plan_job(self, job_id, identity):
+        if not _nonempty_string(job_id) or not _valid_plan_job_identity(identity):
+            raise AgentConnectionError("Planning job request is invalid.")
+        return self._post_plan_job(
+            "/v1/plan-jobs/{}/cancel".format(job_id),
+            "analysis.plan.cancel",
+            identity,
+            "cancel",
+        )
+
     def create_plan(
         self,
         project_directory,
@@ -375,6 +524,71 @@ class AgentClient:
             },
             timeout_seconds=self.planning_timeout_seconds,
         )
+
+    def _post_plan_job(self, path, action, payload, operation):
+        request_id = "plan-job-{}".format(uuid.uuid4().hex)
+        envelope = {
+            "contract_version": CONTRACT_VERSION,
+            "message_type": "request",
+            "request_id": request_id,
+            "action": action,
+            "payload": payload,
+        }
+        request = Request(
+            self.base_url + path,
+            data=json.dumps(envelope, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        return self._read_plan_job_response(request, request_id, operation)
+
+    def _read_plan_job_response(self, request, request_id, operation):
+        try:
+            response = urlopen(request, timeout=self.timeout_seconds)
+            try:
+                envelope = json.loads(response.read().decode("utf-8"))
+            finally:
+                response.close()
+            snapshot = envelope.get("payload") if isinstance(envelope, dict) else None
+            if (
+                not isinstance(envelope, dict)
+                or set(envelope)
+                != {
+                    "contract_version",
+                    "message_type",
+                    "request_id",
+                    "status",
+                    "payload",
+                }
+                or envelope.get("contract_version") != CONTRACT_VERSION
+                or envelope.get("message_type") != "response"
+                or envelope.get("request_id") != request_id
+                or not _valid_plan_job_snapshot(snapshot)
+                or not self._valid_plan_job_response_status(
+                    operation, envelope.get("status"), snapshot["state"]
+                )
+            ):
+                raise AgentConnectionError(
+                    "Planning job request returned an incompatible v1 response."
+                )
+            return snapshot
+        except AgentConnectionError:
+            raise
+        except HTTPError as exc:
+            raise AgentConnectionError(_agent_http_error_message(exc, request_id))
+        except (OSError, TypeError, ValueError, URLError) as exc:
+            raise AgentConnectionError(
+                "Local Agent planning job request failed: {}".format(exc)
+            )
+
+    @staticmethod
+    def _valid_plan_job_response_status(operation, status, state):
+        if operation == "submit":
+            return status == "accepted"
+        if state in ("queued", "running"):
+            return status == "accepted"
+        if state == "cancelled":
+            return status == "cancelled"
+        return status == "completed"
 
     def _post_session_json(self, path, action, payload, timeout_seconds=None):
         request_id = "session-{}".format(uuid.uuid4().hex)
