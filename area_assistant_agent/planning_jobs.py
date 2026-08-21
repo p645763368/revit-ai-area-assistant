@@ -61,7 +61,14 @@ class PlanningJobRegistry:
         self._idempotency_index: Dict[str, str] = {}
         self._load()
 
-    def submit(self, identity: Dict[str, Any], message: str) -> Tuple[Dict[str, Any], bool]:
+    def submit(
+        self,
+        identity: Dict[str, Any],
+        message: str,
+        retry_terminal: bool = False,
+    ) -> Tuple[Dict[str, Any], bool]:
+        if type(retry_terminal) is not bool:
+            raise ValueError("retry_terminal must be a boolean")
         normalized_identity = self._normalize_identity(identity)
         normalized_message = " ".join(message.split())
         idempotency_key = self._make_idempotency_key(
@@ -72,7 +79,11 @@ class PlanningJobRegistry:
             if existing_id is not None:
                 existing = self._jobs.get(existing_id)
                 if existing is not None:
-                    return self._snapshot(existing), False
+                    replaceable_terminal = existing["state"] in {
+                        "failed", "cancelled", "interrupted"
+                    }
+                    if not retry_terminal or not replaceable_terminal:
+                        return self._snapshot(existing), False
 
             job_id = self._new_job_id()
             timestamp = self._timestamp()

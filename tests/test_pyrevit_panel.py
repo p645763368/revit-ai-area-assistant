@@ -80,9 +80,10 @@ class _SessionClient:
 
 class _PlanClient(_SessionClient):
     def submit_plan_job(
-        self, project, fingerprint, context, panel, generation, session, message
+        self, project, fingerprint, context, panel, generation, session, message,
+        retry_terminal=False,
     ):
-        self.calls.append(("submit", fingerprint, session, message))
+        self.calls.append(("submit", fingerprint, session, message, retry_terminal))
         return _plan_job_snapshot("queued", "accepted")
 
     def get_plan_job(self, job_id, identity):
@@ -105,7 +106,8 @@ class _RecoverablePlanJobClient(_SessionClient):
         self.polled_job_ids = []
 
     def submit_plan_job(
-        self, project, fingerprint, context, panel, generation, session, message
+        self, project, fingerprint, context, panel, generation, session, message,
+        retry_terminal=False,
     ):
         self.submit_count += 1
         return _plan_job_snapshot("queued", "accepted")
@@ -226,12 +228,22 @@ class _InterruptedPlanJobClient(_SessionClient):
     def __init__(self):
         super().__init__()
         self.submit_count = 0
+        self.retry_terminal_values = []
 
     def submit_plan_job(self, *args):
         self.submit_count += 1
-        return _plan_job_snapshot("queued", "accepted")
+        self.retry_terminal_values.append(args[-1])
+        return dict(
+            _plan_job_snapshot("queued", "accepted"),
+            job_id="job-{}".format(self.submit_count),
+        )
 
     def get_plan_job(self, job_id, identity):
+        if job_id == "job-2":
+            return dict(
+                _plan_job_snapshot("completed", "finished", result=_plan_result()),
+                job_id="job-2",
+            )
         return _plan_job_snapshot(
             "interrupted",
             "finished",
@@ -259,6 +271,18 @@ class _AmbiguousSubmitClient(_SessionClient):
 
     def get_plan_job(self, job_id, identity):
         return _plan_job_snapshot("completed", "finished", result=_plan_result())
+
+
+class _DefinitiveSubmitClient(_SessionClient):
+    def __init__(self, error_type, message):
+        super().__init__()
+        self.error_type = error_type
+        self.message = message
+        self.submissions = []
+
+    def submit_plan_job(self, *args):
+        self.submissions.append(args)
+        raise self.error_type(self.message)
 
 
 class _CallbackWait:
@@ -426,6 +450,7 @@ def _make_planning_panel(panel_module, client):
     panel._planning_job_id = None
     panel._planning_job_context = None
     panel._planning_poll_generation = 0
+    panel._planning_terminal_retry_available = False
     panel._planning_options = []
     panel._last_message = None
     panel._selected_elements = []
@@ -525,7 +550,7 @@ class PyRevitPanelTests(unittest.TestCase):
 
     def test_ambiguous_submit_retries_identically_without_enabling_distinct_submit(self):
         panel_module = _load_panel_module()
-        client = _AmbiguousSubmitClient(panel_module.AgentConnectionError)
+        client = _AmbiguousSubmitClient(panel_module.PlanJobTransportError)
         panel = _make_planning_panel(panel_module, client)
         observed_during_wait = []
 
@@ -550,11 +575,33 @@ class PyRevitPanelTests(unittest.TestCase):
 
         self.assertEqual(len(client.submissions), 2)
         self.assertEqual(client.submissions[0], client.submissions[1])
+        self.assertIs(client.submissions[0][-1], False)
         self.assertEqual(client.logical_job_count, 1)
         self.assertEqual(observed_during_wait[0][:4], (1.0, False, False, False))
         self.assertIsNotNone(observed_during_wait[0][4])
         self.assertNotIn("不同的付费规划", panel.Transcript.Text)
         self.assertIn("推荐方案", panel.Option1Button.Content)
+
+    def test_definitive_submit_errors_stop_without_automatic_repost(self):
+        panel_module = _load_panel_module()
+        for message in (
+            "Planning request was rejected.",
+            "Planning job request returned an incompatible v1 response.",
+        ):
+            with self.subTest(message=message):
+                client = _DefinitiveSubmitClient(
+                    panel_module.AgentConnectionError, message
+                )
+                panel = _make_planning_panel(panel_module, client)
+
+                panel._request_plan("扫描当前模型")
+
+                self.assertEqual(len(client.submissions), 1)
+                self.assertEqual(panel.ConnectionState.Text, "请求失败")
+                self.assertEqual(panel.ConnectionDetail.Text, message)
+                self.assertTrue(panel.RetryButton.IsEnabled)
+                self.assertIsNone(panel._planning_job_context)
+                self.assertFalse(panel._planning_terminal_retry_available)
 
     def test_plan_poll_recovers_without_duplicate_paid_submission(self):
         panel_module = _load_panel_module()
@@ -797,6 +844,8 @@ class PyRevitPanelTests(unittest.TestCase):
             panel.retry_click(None, None)
 
         self.assertEqual(client.submit_count, 2)
+        self.assertEqual(client.retry_terminal_values, [False, True])
+        self.assertIn("推荐方案", panel.Option1Button.Content)
 
     def test_clickable_recommendation_continues_planning_in_current_session(self):
         panel_module = _load_panel_module()

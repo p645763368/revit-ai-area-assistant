@@ -32,6 +32,10 @@ class AgentConnectionError(Exception):
     pass
 
 
+class PlanJobTransportError(AgentConnectionError):
+    """Planning-job outcome is unknown because loopback transport was lost."""
+
+
 class PlanningRequestTimeout(AgentConnectionError):
     pass
 
@@ -470,7 +474,10 @@ class AgentClient:
         generation,
         session_id,
         message,
+        retry_terminal=False,
     ):
+        if type(retry_terminal) is not bool:
+            raise AgentConnectionError("Planning job request is invalid.")
         return self._post_plan_job(
             "/v1/plan-jobs",
             "analysis.plan.submit",
@@ -481,6 +488,7 @@ class AgentClient:
                 "message": message,
                 "panel_instance_id": panel_instance_id,
                 "project_directory": project_directory,
+                "retry_terminal": retry_terminal,
                 "session_id": session_id,
             },
             "submit",
@@ -550,41 +558,53 @@ class AgentClient:
     def _read_plan_job_response(self, request, request_id, operation):
         try:
             response = urlopen(request, timeout=self.job_timeout_seconds)
-            try:
-                envelope = json.loads(response.read().decode("utf-8"))
-            finally:
-                response.close()
-            snapshot = envelope.get("payload") if isinstance(envelope, dict) else None
-            if (
-                not isinstance(envelope, dict)
-                or set(envelope)
-                != {
-                    "contract_version",
-                    "message_type",
-                    "request_id",
-                    "status",
-                    "payload",
-                }
-                or envelope.get("contract_version") != CONTRACT_VERSION
-                or envelope.get("message_type") != "response"
-                or envelope.get("request_id") != request_id
-                or not _valid_plan_job_snapshot(snapshot)
-                or not self._valid_plan_job_response_status(
-                    operation, envelope.get("status"), snapshot["state"]
-                )
-            ):
-                raise AgentConnectionError(
-                    "Planning job request returned an incompatible v1 response."
-                )
-            return snapshot
-        except AgentConnectionError:
-            raise
         except HTTPError as exc:
             raise AgentConnectionError(_agent_http_error_message(exc, request_id))
-        except (OSError, TypeError, ValueError, URLError):
-            raise AgentConnectionError(
+        except (IOError, OSError, URLError):
+            raise PlanJobTransportError(
                 "Planning job transport is unavailable. Check the local Agent connection."
             )
+        try:
+            try:
+                raw_response = response.read()
+            except (IOError, OSError, URLError):
+                raise PlanJobTransportError(
+                    "Planning job transport is unavailable. Check the local Agent connection."
+                )
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
+        try:
+            envelope = json.loads(raw_response.decode("utf-8"))
+        except (AttributeError, TypeError, UnicodeError, ValueError):
+            raise AgentConnectionError(
+                "Planning job request returned an incompatible v1 response."
+            )
+        snapshot = envelope.get("payload") if isinstance(envelope, dict) else None
+        if (
+            not isinstance(envelope, dict)
+            or set(envelope)
+            != {
+                "contract_version",
+                "message_type",
+                "request_id",
+                "status",
+                "payload",
+            }
+            or envelope.get("contract_version") != CONTRACT_VERSION
+            or envelope.get("message_type") != "response"
+            or envelope.get("request_id") != request_id
+            or not _valid_plan_job_snapshot(snapshot)
+            or not self._valid_plan_job_response_status(
+                operation, envelope.get("status"), snapshot["state"]
+            )
+        ):
+            raise AgentConnectionError(
+                "Planning job request returned an incompatible v1 response."
+            )
+        return snapshot
 
     @staticmethod
     def _valid_plan_job_response_status(operation, status, state):

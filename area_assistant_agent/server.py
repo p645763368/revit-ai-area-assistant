@@ -605,16 +605,19 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                     "message",
                     "panel_instance_id",
                     "project_directory",
+                    "retry_terminal",
                     "session_id",
                 },
             )
             request_id = request["request_id"]
             message = request["message"]
+            retry_terminal = request["retry_terminal"]
             session_id = request["session_id"]
             if (
                 not isinstance(message, str)
                 or not message.strip()
                 or not isinstance(session_id, str)
+                or type(retry_terminal) is not bool
             ):
                 raise ValueError("invalid planning request")
             repository = self._session_repository(request)
@@ -633,7 +636,9 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                     document_fingerprint, session_id
                 )
                 registry = _registry_for(self.server, session_directory)
-                snapshot, created = registry.submit(identity, message)
+                snapshot, created = registry.submit(
+                    identity, message, retry_terminal=retry_terminal
+                )
                 if created:
                     job_id = snapshot["job_id"]
                     worker = threading.Thread(

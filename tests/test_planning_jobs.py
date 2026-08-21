@@ -17,10 +17,11 @@ class PlanningJobRegistryTests(unittest.TestCase):
             "document_fingerprint": "document-a",
             "session_id": "session-a",
         }
+        job_ids = iter(("job-1", "job-2", "job-3", "job-4", "job-5"))
         self.registry = PlanningJobRegistry(
             self.storage_root,
             clock=lambda: "2026-08-21T10:00:00+00:00",
-            id_factory=lambda: "job-1",
+            id_factory=lambda: next(job_ids),
         )
 
     @staticmethod
@@ -136,6 +137,81 @@ class PlanningJobRegistryTests(unittest.TestCase):
         self.assertEqual(second_snapshot, first_snapshot)
         self.assertEqual(second_snapshot["state"], "interrupted")
         self.assertEqual(second_snapshot["error"]["code"], "agent_restarted")
+
+    def test_explicit_retry_replaces_interrupted_index_once_after_restart(self):
+        job, _ = self.registry.submit(self.identity, "scan")
+        self.registry.transition(job["job_id"], "running", "reading_model")
+        restored_ids = iter(("job-2", "job-3"))
+        restored_registry = PlanningJobRegistry(
+            self.storage_root,
+            clock=lambda: "2026-08-21T10:01:00+00:00",
+            id_factory=lambda: next(restored_ids),
+        )
+
+        replayed, replayed_created = restored_registry.submit(
+            self.identity, "scan", retry_terminal=False
+        )
+        retried, retried_created = restored_registry.submit(
+            self.identity, "scan", retry_terminal=True
+        )
+        duplicate_retry, duplicate_created = restored_registry.submit(
+            self.identity, "scan", retry_terminal=True
+        )
+
+        self.assertEqual(replayed["job_id"], job["job_id"])
+        self.assertEqual(replayed["state"], "interrupted")
+        self.assertFalse(replayed_created)
+        self.assertNotEqual(retried["job_id"], job["job_id"])
+        self.assertEqual(retried["state"], "queued")
+        self.assertTrue(retried_created)
+        self.assertEqual(duplicate_retry["job_id"], retried["job_id"])
+        self.assertFalse(duplicate_created)
+
+    def test_explicit_retry_never_replaces_completed_job(self):
+        job, _ = self.registry.submit(self.identity, "scan")
+        self.registry.transition(job["job_id"], "running", "reading_model")
+        completed = self.registry.transition(
+            job["job_id"], "completed", "finished", result=self._valid_result()
+        )
+
+        retried, created = self.registry.submit(
+            self.identity, "scan", retry_terminal=True
+        )
+
+        self.assertFalse(created)
+        self.assertEqual(retried, completed)
+
+    def test_explicit_retry_replaces_failed_and_cancelled_jobs(self):
+        failed, _ = self.registry.submit(self.identity, "fail scan")
+        self.registry.transition(failed["job_id"], "running", "requesting_model")
+        self.registry.transition(
+            failed["job_id"],
+            "failed",
+            "finished",
+            error={
+                "code": "planning_failed",
+                "message": "Planning failed.",
+                "retryable": True,
+            },
+        )
+        cancelled, _ = self.registry.submit(self.identity, "cancel scan")
+        self.registry.cancel(cancelled["job_id"], self.identity)
+
+        retried_failed, failed_created = self.registry.submit(
+            self.identity, "fail scan", retry_terminal=True
+        )
+        retried_cancelled, cancelled_created = self.registry.submit(
+            self.identity, "cancel scan", retry_terminal=True
+        )
+
+        self.assertTrue(failed_created)
+        self.assertNotEqual(retried_failed["job_id"], failed["job_id"])
+        self.assertTrue(cancelled_created)
+        self.assertNotEqual(retried_cancelled["job_id"], cancelled["job_id"])
+
+    def test_retry_terminal_must_be_an_exact_boolean(self):
+        with self.assertRaises(ValueError):
+            self.registry.submit(self.identity, "scan", retry_terminal=1)
 
     def test_malformed_and_unsafe_job_files_are_skipped(self):
         valid_job, _ = self.registry.submit(self.identity, "valid scan")

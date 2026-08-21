@@ -15,6 +15,7 @@ from . import PANEL_ID
 from .client import (
     AgentClient,
     AgentConnectionError,
+    PlanJobTransportError,
     ensure_agent_available,
 )
 from .document_status import collect_document_status
@@ -64,6 +65,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._planning_job_id = None
         self._planning_job_context = None
         self._planning_poll_generation = 0
+        self._planning_terminal_retry_available = False
         self._planning_options = []
         self.SendButton.Click += self.send_click
         self.AnalyzeButton.Click += self.analyze_click
@@ -149,7 +151,12 @@ class AiAreaAssistantPanel(forms.WPFPanel):
     def retry_click(self, sender, args):
         if self._last_message:
             if self._planning_active:
-                self._request_plan(self._last_message)
+                self._request_plan(
+                    self._last_message,
+                    retry_terminal=getattr(
+                        self, "_planning_terminal_retry_available", False
+                    ),
+                )
             else:
                 self._send(self._last_message)
         else:
@@ -428,7 +435,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
                 )
             )
 
-    def _request_plan(self, message):
+    def _request_plan(self, message, retry_terminal=False):
         context = self._session_context()
         if context is None:
             self._set_status("等待选择", "请先为当前文档选择继续或新建会话")
@@ -445,6 +452,11 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             return
         self._planning_active = True
         self._last_message = message
+        retry_terminal = bool(
+            retry_terminal
+            and getattr(self, "_planning_terminal_retry_available", False)
+        )
+        self._planning_terminal_retry_available = False
         self._planning_poll_generation = (
             getattr(self, "_planning_poll_generation", 0) + 1
         )
@@ -458,10 +470,14 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._set_plan_options_enabled(False)
         self._set_status("分析中", "AI正在只读扫描模型并比较证据…")
         self._run_background(
-            lambda: self._submit_plan_job(message, context, poll_generation)
+            lambda: self._submit_plan_job(
+                message, context, poll_generation, retry_terminal
+            )
         )
 
-    def _submit_plan_job(self, message, context, poll_generation):
+    def _submit_plan_job(
+        self, message, context, poll_generation, retry_terminal=False
+    ):
         while self._planning_poll_is_current(context, poll_generation):
             try:
                 snapshot = self._client.submit_plan_job(
@@ -472,9 +488,10 @@ class AiAreaAssistantPanel(forms.WPFPanel):
                     context[0],
                     context[4],
                     message,
+                    retry_terminal,
                 )
                 break
-            except AgentConnectionError:
+            except PlanJobTransportError:
                 self._dispatch(
                     lambda session=context, generation=poll_generation: self._planning_submit_connection_failed(
                         session, generation
@@ -485,6 +502,14 @@ class AiAreaAssistantPanel(forms.WPFPanel):
                 ):
                     return
                 threading.Event().wait(1.0)
+            except AgentConnectionError as exc:
+                error_message = str(exc)
+                self._dispatch(
+                    lambda text=error_message, session=context, generation=poll_generation: self._planning_submit_failed(
+                        text, session, generation
+                    )
+                )
+                return
         else:
             return
         if not self._planning_poll_is_current(context, poll_generation):
@@ -541,6 +566,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             self._set_status("分析中", self._planning_stage_text(snapshot["stage"]))
             return
         if snapshot["state"] == "completed":
+            self._planning_terminal_retry_available = False
             self._plan_completed(snapshot["result"], context)
             self._clear_planning_job(context, poll_generation, job_id)
             return
@@ -567,6 +593,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._set_busy(False)
         self._set_status(title, detail)
         self.RetryButton.IsEnabled = True
+        self._planning_terminal_retry_available = True
         self._clear_planning_job(context, poll_generation, job_id)
 
     def _planning_poll_connection_failed(
@@ -588,6 +615,14 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             "仍在等待",
             "规划提交结果未确认，正在使用同一请求重新连接…",
         )
+
+    def _planning_submit_failed(self, message, context, poll_generation):
+        if not self._planning_poll_is_current(context, poll_generation):
+            return
+        self._planning_job_id = None
+        self._planning_job_context = None
+        self._planning_terminal_retry_available = False
+        self._reply_failed(message, True, context)
 
     def _planning_poll_is_current(
         self, context, poll_generation, job_id=None
@@ -876,6 +911,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._planning_job_id = None
         self._planning_job_context = None
         self._planning_options = []
+        self._planning_terminal_retry_available = False
         if hasattr(self, "StructuredSummary"):
             self.StructuredSummary.Text = "文档已切换；旧方案已清除。"
             self.StructuredQuestion.Text = "尚无待确认方案"

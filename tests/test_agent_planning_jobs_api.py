@@ -192,6 +192,37 @@ class AgentPlanningJobsApiTests(unittest.TestCase):
             self._wait_for_terminal(first["job_id"])["state"], "completed"
         )
 
+    def test_explicit_terminal_retry_creates_one_fresh_job(self):
+        started = threading.Event()
+        release = threading.Event()
+        planner = _BlockingPlanner(started, release)
+        self.server.planning_agent = planner
+        first = self._submit_plan_job("retry scan")
+        self.assertTrue(started.wait(1))
+        self._cancel_plan_job(first["job_id"])
+
+        retried = self._submit_plan_job("retry scan", retry_terminal=True)
+        duplicate = self._submit_plan_job(
+            "retry scan", retry_terminal=True, expected_status=200
+        )
+
+        self.assertNotEqual(retried["job_id"], first["job_id"])
+        self.assertEqual(duplicate["job_id"], retried["job_id"])
+        release.set()
+        for worker in self.server.planning_workers.values():
+            worker.join(2)
+        self.assertEqual(planner.calls, 2)
+
+    def test_submit_rejects_non_boolean_retry_terminal(self):
+        with self.assertRaises(HTTPError) as raised:
+            self._post(
+                "/v1/plan-jobs",
+                "analysis.plan.submit",
+                dict(self.identity, message="scan", retry_terminal=1),
+            )
+
+        self.assertEqual(raised.exception.code, 400)
+
     def test_unknown_failure_uses_fixed_public_error_on_disk_and_http(self):
         private_marker = "private-diagnostic-marker-cedar-714"
         self.server.planning_agent = _UnexpectedFailurePlanner()
@@ -424,11 +455,17 @@ class AgentPlanningJobsApiTests(unittest.TestCase):
         self.assertEqual(payload["options"][0]["id"], "floor")
         self.assertEqual(planner.calls, 1)
 
-    def _submit_plan_job(self, message, expected_status=202):
+    def _submit_plan_job(
+        self, message, retry_terminal=False, expected_status=202
+    ):
         status, payload = self._post(
             "/v1/plan-jobs",
             "analysis.plan.submit",
-            dict(self.identity, message=message),
+            dict(
+                self.identity,
+                message=message,
+                retry_terminal=retry_terminal,
+            ),
         )
         self.assertEqual(status, expected_status)
         return payload

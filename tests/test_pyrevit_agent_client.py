@@ -1,15 +1,18 @@
 import json
+import io
 import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import unittest
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import patch
 
 from area_assistant_pyrevit.client import (
     AgentClient,
     AgentConnectionError,
+    PlanJobTransportError,
     PlanningRequestTimeout,
     ensure_agent_available,
     planning_timeout_from_environment,
@@ -460,6 +463,7 @@ class PyRevitAgentClientTests(unittest.TestCase):
                 identity["generation"],
                 identity["session_id"],
                 "scan",
+                retry_terminal=True,
             )
             polled = client.get_plan_job("job-a", identity)
             cancelled = client.cancel_plan_job("job-a", identity)
@@ -475,7 +479,10 @@ class PyRevitAgentClientTests(unittest.TestCase):
         poll_request = self.server.requests[-2][1]
         cancel_request = self.server.requests[-1][1]
         self.assertEqual(submit_request["action"], "analysis.plan.submit")
-        self.assertEqual(submit_request["payload"], dict(identity, message="scan"))
+        self.assertEqual(
+            submit_request["payload"],
+            dict(identity, message="scan", retry_terminal=True),
+        )
         self.assertEqual(poll_request["query"], {key: [str(value)] for key, value in identity.items()})
         self.assertEqual(cancel_request["action"], "analysis.plan.cancel")
         self.assertEqual(cancel_request["payload"], identity)
@@ -539,7 +546,7 @@ class PyRevitAgentClientTests(unittest.TestCase):
             raise OSError(private_marker)
 
         with patch("area_assistant_pyrevit.client.urlopen", side_effect=fail_poll):
-            with self.assertRaises(AgentConnectionError) as raised:
+            with self.assertRaises(PlanJobTransportError) as raised:
                 self.client.get_plan_job("job-a", identity)
 
         self.assertEqual(
@@ -549,6 +556,51 @@ class PyRevitAgentClientTests(unittest.TestCase):
         self.assertNotIn(private_marker, str(raised.exception))
         self.assertEqual(len(requests), 1)
         self.assertTrue(requests[0][0].startswith(self.client.base_url + "/v1/plan-jobs/job-a?"))
+
+    def test_submit_http_rejection_is_definitive_not_ambiguous_transport(self):
+        error_body = io.BytesIO(json.dumps({
+            "contract_version": "1.0",
+            "message_type": "error",
+            "request_id": "unknown",
+            "code": "planning_rejected",
+            "message": "Planning request was rejected.",
+            "retryable": True,
+        }).encode("utf-8"))
+        rejection = HTTPError(
+            self.client.base_url + "/v1/plan-jobs",
+            409,
+            "Conflict",
+            {},
+            error_body,
+        )
+
+        with patch("area_assistant_pyrevit.client.urlopen", side_effect=rejection):
+            with self.assertRaises(AgentConnectionError) as raised:
+                self.client.submit_plan_job(
+                    "C:\\test", "document-a", "context-a", "panel-a", 1,
+                    "session-a", "scan", retry_terminal=False,
+                )
+
+        self.assertNotIsInstance(raised.exception, PlanJobTransportError)
+        self.assertIn("HTTP Error 409", str(raised.exception))
+
+    def test_submit_incompatible_response_is_definitive_not_transport(self):
+        class Response:
+            def read(self):
+                return b"{not-json"
+
+            def close(self):
+                pass
+
+        with patch("area_assistant_pyrevit.client.urlopen", return_value=Response()):
+            with self.assertRaises(AgentConnectionError) as raised:
+                self.client.submit_plan_job(
+                    "C:\\test", "document-a", "context-a", "panel-a", 1,
+                    "session-a", "scan", retry_terminal=False,
+                )
+
+        self.assertNotIsInstance(raised.exception, PlanJobTransportError)
+        self.assertIn("incompatible v1 response", str(raised.exception))
 
     def test_plan_job_poll_timeout_raises_connection_error_without_hidden_retry(self):
         identity = {
