@@ -47,6 +47,43 @@ class PlanningJobRegistryTests(unittest.TestCase):
             ],
         }
 
+    def _write_legacy_duplicate_records(self):
+        job_ids = iter(("job-z", "job-a"))
+        legacy_registry = PlanningJobRegistry(
+            self.storage_root,
+            clock=lambda: "2026-08-21T10:00:00+00:00",
+            id_factory=lambda: next(job_ids),
+        )
+        stale, _ = legacy_registry.submit(self.identity, "legacy scan")
+        legacy_registry.transition(stale["job_id"], "running", "reading_model")
+        legacy_registry.transition(
+            stale["job_id"],
+            "failed",
+            "finished",
+            error={
+                "code": "old_failure",
+                "message": "Old terminal error must not be replayed.",
+                "retryable": True,
+            },
+        )
+        replacement, _ = legacy_registry.submit(
+            self.identity, "legacy scan", retry_terminal=True
+        )
+        legacy_registry.transition(
+            replacement["job_id"], "running", "reading_model"
+        )
+        legacy_registry.transition(
+            replacement["job_id"],
+            "completed",
+            "finished",
+            result=self._valid_result("Old completed result must not be replayed."),
+        )
+        for path in self.storage_root.glob("*.json"):
+            record = json.loads(path.read_text(encoding="utf-8"))
+            record.pop("idempotency_generation")
+            path.write_text(json.dumps(record), encoding="utf-8")
+        return stale["job_id"], replacement["job_id"]
+
     def tearDown(self):
         self._temporary_directory.cleanup()
 
@@ -198,6 +235,117 @@ class PlanningJobRegistryTests(unittest.TestCase):
         self.assertEqual(
             persisted[replacement["job_id"]]["idempotency_generation"], 1
         )
+
+    def test_legacy_duplicate_records_fail_closed_and_retry_only_once(self):
+        stale_id, replacement_id = self._write_legacy_duplicate_records()
+        restored_ids = iter(("job-fresh", "job-unused"))
+        restored = PlanningJobRegistry(
+            self.storage_root,
+            clock=lambda: "2026-08-21T10:01:00+00:00",
+            id_factory=lambda: next(restored_ids),
+        )
+        safe_error = {
+            "code": "legacy_idempotency_conflict",
+            "message": "Conflicting legacy planning jobs were interrupted safely.",
+            "retryable": True,
+        }
+
+        stale = restored.get(stale_id, self.identity)
+        replacement = restored.get(replacement_id, self.identity)
+        replayed, replayed_created = restored.submit(
+            self.identity, "legacy scan", retry_terminal=False
+        )
+        files_after_replay = list(self.storage_root.glob("*.json"))
+        retried, retried_created = restored.submit(
+            self.identity, "legacy scan", retry_terminal=True
+        )
+        duplicate_retry, duplicate_created = restored.submit(
+            self.identity, "legacy scan", retry_terminal=True
+        )
+        persisted = {
+            path.stem: json.loads(path.read_text(encoding="utf-8"))
+            for path in self.storage_root.glob("*.json")
+        }
+
+        for snapshot in (stale, replacement, replayed):
+            self.assertEqual(snapshot["state"], "interrupted")
+            self.assertEqual(snapshot["stage"], "finished")
+            self.assertIsNone(snapshot["result"])
+            self.assertEqual(snapshot["error"], safe_error)
+            self.assertEqual(
+                set(snapshot),
+                {
+                    "job_id",
+                    "state",
+                    "stage",
+                    "created_at",
+                    "updated_at",
+                    "result",
+                    "error",
+                },
+            )
+        self.assertEqual(replayed["job_id"], "job-z")
+        self.assertFalse(replayed_created)
+        self.assertEqual(len(files_after_replay), 2)
+        self.assertTrue(retried_created)
+        self.assertEqual(retried["job_id"], "job-fresh")
+        self.assertEqual(retried["state"], "queued")
+        self.assertFalse(duplicate_created)
+        self.assertEqual(duplicate_retry, retried)
+        self.assertEqual(len(persisted), 3)
+        self.assertEqual(persisted[stale_id]["idempotency_generation"], 0)
+        self.assertEqual(persisted[replacement_id]["idempotency_generation"], 0)
+        self.assertEqual(persisted[retried["job_id"]]["idempotency_generation"], 1)
+
+    def test_legacy_conflict_write_failure_publishes_no_partial_registry(self):
+        stale_id, replacement_id = self._write_legacy_duplicate_records()
+
+        class FailingMigrationRegistry(PlanningJobRegistry):
+            def __init__(self, *args, **kwargs):
+                self.migration_write_count = 0
+                super().__init__(*args, **kwargs)
+
+            def _write_record(self, record):
+                self.migration_write_count += 1
+                if self.migration_write_count == 2:
+                    raise OSError("injected legacy migration failure")
+                return super()._write_record(record)
+
+        failed_registry = FailingMigrationRegistry.__new__(FailingMigrationRegistry)
+        with self.assertRaisesRegex(OSError, "injected legacy migration failure"):
+            failed_registry.__init__(
+                self.storage_root,
+                clock=lambda: "2026-08-21T10:01:00+00:00",
+            )
+
+        self.assertEqual(failed_registry._jobs, {})
+        self.assertEqual(failed_registry._idempotency_index, {})
+        partially_written = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in self.storage_root.glob("*.json")
+        ]
+        self.assertTrue(
+            all("idempotency_generation" not in record for record in partially_written)
+        )
+
+        recovered = PlanningJobRegistry(
+            self.storage_root,
+            clock=lambda: "2026-08-21T10:02:00+00:00",
+        )
+        for job_id in (stale_id, replacement_id):
+            snapshot = recovered.get(job_id, self.identity)
+            self.assertEqual(snapshot["state"], "interrupted")
+            self.assertIsNone(snapshot["result"])
+            self.assertEqual(
+                snapshot["error"],
+                {
+                    "code": "legacy_idempotency_conflict",
+                    "message": (
+                        "Conflicting legacy planning jobs were interrupted safely."
+                    ),
+                    "retryable": True,
+                },
+            )
 
     def test_explicit_retry_never_replaces_completed_job(self):
         job, _ = self.registry.submit(self.identity, "scan")

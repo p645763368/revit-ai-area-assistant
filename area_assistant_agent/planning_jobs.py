@@ -37,6 +37,10 @@ ALLOWED_TRANSITIONS = {
     "queued": {"running", "cancelled"},
     "running": {"running", "completed", "failed", "cancelled"},
 }
+LEGACY_CONFLICT_ERROR_CODE = "legacy_idempotency_conflict"
+LEGACY_CONFLICT_ERROR_MESSAGE = (
+    "Conflicting legacy planning jobs were interrupted safely."
+)
 
 
 def _utc_now() -> str:
@@ -175,34 +179,100 @@ class PlanningJobRegistry:
 
     def _load(self) -> None:
         with self._lock:
+            loaded_records = []
             for path in sorted(self.storage_root.glob("*.json")):
                 try:
                     record = json.loads(path.read_text(encoding="utf-8"))
                     self._validate_record(record, path)
-                    record = self._sanitize_loaded_record(record)
-                    if record["state"] in NON_TERMINAL_STATES:
-                        candidate = deepcopy(record)
-                        candidate["state"] = "interrupted"
-                        candidate["error"] = {
-                            "code": "agent_restarted",
-                            "message": "The Agent restarted before planning completed.",
-                            "retryable": True,
-                        }
-                        candidate["updated_at"] = self._timestamp()
-                        self._write_record(candidate)
-                        record = candidate
-                    job_id = record["job_id"]
-                    idempotency_key = record["idempotency_key"]
-                    self._jobs[job_id] = record
-                    current_owner_id = self._idempotency_index.get(idempotency_key)
-                    if current_owner_id is None or self._idempotency_owner_key(
-                        record
-                    ) > self._idempotency_owner_key(
-                        self._jobs[current_owner_id]
-                    ):
-                        self._idempotency_index[idempotency_key] = job_id
                 except (OSError, TypeError, ValueError, json.JSONDecodeError):
                     continue
+                loaded_records.append(
+                    (record, "idempotency_generation" not in record)
+                )
+
+            legacy_records_by_key = {}
+            for record, is_legacy in loaded_records:
+                if is_legacy:
+                    legacy_records_by_key.setdefault(
+                        record["idempotency_key"], []
+                    ).append(record)
+
+            migrated_conflicts = {}
+            for idempotency_key in sorted(legacy_records_by_key):
+                conflict_records = legacy_records_by_key[idempotency_key]
+                if len(conflict_records) < 2:
+                    continue
+                for record in self._migrate_legacy_conflict_records(
+                    conflict_records
+                ):
+                    migrated_conflicts[record["job_id"]] = record
+
+            candidates = []
+            for record, _is_legacy in loaded_records:
+                migrated = migrated_conflicts.get(record["job_id"])
+                if migrated is not None:
+                    candidates.append(migrated)
+                    continue
+                try:
+                    candidate = self._sanitize_loaded_record(record)
+                    if candidate["state"] in NON_TERMINAL_STATES:
+                        interrupted = deepcopy(candidate)
+                        interrupted["state"] = "interrupted"
+                        interrupted["error"] = {
+                            "code": "agent_restarted",
+                            "message": (
+                                "The Agent restarted before planning completed."
+                            ),
+                            "retryable": True,
+                        }
+                        interrupted["updated_at"] = self._timestamp()
+                        self._write_record(interrupted)
+                        candidate = interrupted
+                except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                candidates.append(candidate)
+
+            jobs = {}
+            idempotency_index = {}
+            for record in candidates:
+                job_id = record["job_id"]
+                idempotency_key = record["idempotency_key"]
+                jobs[job_id] = record
+                current_owner_id = idempotency_index.get(idempotency_key)
+                if current_owner_id is None or self._idempotency_owner_key(
+                    record
+                ) > self._idempotency_owner_key(jobs[current_owner_id]):
+                    idempotency_index[idempotency_key] = job_id
+            self._jobs = jobs
+            self._idempotency_index = idempotency_index
+
+    def _migrate_legacy_conflict_records(self, records):
+        timestamp = self._timestamp()
+        safe_records = []
+        # Keep the legacy marker until every conflicting payload is safe so a
+        # later load can retry the whole group after any interrupted write.
+        for record in sorted(records, key=lambda item: item["job_id"]):
+            candidate = deepcopy(record)
+            candidate["state"] = "interrupted"
+            candidate["stage"] = "finished"
+            candidate["updated_at"] = timestamp
+            candidate["result"] = None
+            candidate["error"] = {
+                "code": LEGACY_CONFLICT_ERROR_CODE,
+                "message": LEGACY_CONFLICT_ERROR_MESSAGE,
+                "retryable": True,
+            }
+            self._write_record(candidate)
+            safe_records.append(candidate)
+
+        # Publish generation metadata only after no old result or error remains.
+        migrated_records = []
+        for record in safe_records:
+            candidate = deepcopy(record)
+            candidate["idempotency_generation"] = 0
+            self._write_record(candidate)
+            migrated_records.append(candidate)
+        return migrated_records
 
     def _validate_record(self, record: Any, path: Path) -> None:
         if not isinstance(record, dict):
