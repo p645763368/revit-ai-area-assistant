@@ -147,6 +147,149 @@ class PlanningAgentTests(unittest.TestCase):
             "inspect_revit_model",
         )
 
+    def test_progress_stages_follow_real_model_read_capture_and_validation_boundaries(self):
+        observed = []
+
+        class TracingModel(_ScriptedModel):
+            def planning_turn(self, messages, tools):
+                observed.append("model_request")
+                return super().planning_turn(messages, tools)
+
+        class TracingMcpClient(_McpClient):
+            def call_tool(self, name, arguments):
+                if (
+                    name == "revit_send_code_to_revit"
+                    and arguments.get("code") != DOCUMENT_EVIDENCE_CODE
+                ):
+                    observed.append("model_read")
+                if name == "capture_view_image":
+                    observed.append("capture")
+                return super().call_tool(name, arguments)
+
+        model = TracingModel(
+            [
+                {
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "read",
+                            "name": "inspect_revit_model",
+                            "arguments": {"query": "levels"},
+                        }
+                    ],
+                },
+                {
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "capture",
+                            "name": "capture_revit_view",
+                            "arguments": {"view_id": 42},
+                        }
+                    ],
+                },
+                {
+                    "content": json.dumps(
+                        {
+                            "summary": "Evidence collected.",
+                            "question": "Which source should be used?",
+                            "options": [
+                                {
+                                    "id": "floor",
+                                    "label": "Floor",
+                                    "recommended": True,
+                                    "rationale": "Exact outline.",
+                                    "impact": "Use the floor outline.",
+                                },
+                                {
+                                    "id": "wall",
+                                    "label": "Walls",
+                                    "recommended": False,
+                                    "rationale": "Cross-check only.",
+                                    "impact": "Inspect wall joins.",
+                                },
+                            ],
+                        }
+                    ),
+                    "tool_calls": [],
+                },
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = PlanningAgent(
+                model,
+                KnowledgeCatalog(ROOT / "knowledge"),
+                TracingMcpClient,
+            ).plan(
+                [{"role": "user", "content": "scan"}],
+                Path(directory),
+                lambda *args: None,
+                progress=lambda stage: observed.append("stage:" + stage),
+            )
+
+        self.assertIsInstance(result, PlanningResult)
+        self.assertEqual(
+            observed,
+            [
+                "model_request",
+                "stage:reading_model",
+                "model_read",
+                "model_request",
+                "stage:capturing_evidence",
+                "capture",
+                "stage:requesting_model",
+                "model_request",
+                "stage:validating_result",
+            ],
+        )
+
+    def test_progress_does_not_claim_evidence_stages_when_no_tools_are_used(self):
+        observed = []
+        model = _ScriptedModel(
+            [
+                {
+                    "content": json.dumps(
+                        {
+                            "summary": "No model evidence was requested.",
+                            "question": "Which direction should be explored?",
+                            "options": [
+                                {
+                                    "id": "a",
+                                    "label": "A",
+                                    "recommended": True,
+                                    "rationale": "First option.",
+                                    "impact": "Explore A.",
+                                },
+                                {
+                                    "id": "b",
+                                    "label": "B",
+                                    "recommended": False,
+                                    "rationale": "Alternative option.",
+                                    "impact": "Explore B.",
+                                },
+                            ],
+                        }
+                    ),
+                    "tool_calls": [],
+                }
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            PlanningAgent(
+                model,
+                KnowledgeCatalog(ROOT / "knowledge"),
+                _McpClient,
+            ).plan(
+                [{"role": "user", "content": "brainstorm"}],
+                Path(directory),
+                lambda *args: None,
+                progress=observed.append,
+            )
+
+        self.assertEqual(observed, ["requesting_model", "validating_result"])
+
     def test_read_only_boundary_rejects_unknown_or_write_shaped_tools(self):
         tools = ReadOnlyRevitTools(_McpClient(), Path(tempfile.gettempdir()))
 

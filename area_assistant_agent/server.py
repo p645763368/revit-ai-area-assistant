@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import threading
+from urllib.parse import parse_qs, urlparse
 import uuid
 
 from . import CONTRACT_VERSION, SERVICE_NAME
@@ -13,11 +14,16 @@ from .document_status_runtime import resolve_document_status
 from .model_api import ModelApiError, OpenAICompatibleClient
 from .persistence import SessionRepository
 from .planning import KnowledgeCatalog, PlanningAgent
+from .planning_jobs import PlanningJobRegistry
 from .rvt_mcp_gateway import McpStdioClient
 
 
 class AgentHttpServer(ThreadingHTTPServer):
     daemon_threads = True
+
+
+class CancelledPlanningJob(RuntimeError):
+    """Stop a worker after its durable job fence has been cancelled."""
 
 
 def _response(request_id, status, payload):
@@ -42,11 +48,245 @@ def _error(request_id, code, message, retryable):
     }
 
 
+def _identity(request):
+    return {
+        field: request[field]
+        for field in (
+            "panel_instance_id",
+            "generation",
+            "context_id",
+            "document_fingerprint",
+            "session_id",
+        )
+    }
+
+
+def _require_current_session_context(server, request, repository, active_session_id):
+    context_id = request.get("context_id")
+    if not isinstance(context_id, str) or not context_id:
+        raise ValueError("invalid session context")
+    expected = (
+        request["panel_instance_id"],
+        request["generation"],
+        context_id,
+        str(repository.data_root),
+        request["document_fingerprint"],
+        active_session_id,
+    )
+    if server.session_context != expected:
+        raise ValueError("stale session context")
+
+
+def _require_verified_binding(server, document_fingerprint):
+    binding = server.current_document_status
+    if (
+        not isinstance(binding, dict)
+        or binding.get("binding_status") != "bound"
+        or binding.get("rvt_mcp_status") != "verified"
+        or binding.get("document_fingerprint") != document_fingerprint
+    ):
+        raise ValueError("planning requires the current verified Revit document binding")
+
+
+def _require_current_job_identity_locked(server, request, repository):
+    panel_id = request.get("panel_instance_id")
+    generation = request.get("generation")
+    if (
+        not isinstance(panel_id, str)
+        or not panel_id
+        or not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation < 0
+    ):
+        raise LookupError("planning job not found")
+    current_generation = server.panel_generations.get(panel_id)
+    if current_generation is not None and generation < current_generation:
+        raise LookupError("planning job not found")
+    if server.session_context is not None:
+        expected = (
+            panel_id,
+            generation,
+            request.get("context_id"),
+            str(repository.data_root),
+            request.get("document_fingerprint"),
+            request.get("session_id"),
+        )
+        if server.session_context != expected:
+            raise LookupError("planning job not found")
+
+
+def _registry_for(server, session_directory):
+    canonical_directory = str(Path(session_directory).resolve())
+    with server.planning_registries_lock:
+        registry = server.planning_job_registries.get(canonical_directory)
+        if registry is None:
+            registry = PlanningJobRegistry(
+                Path(canonical_directory) / "planning_jobs"
+            )
+            server.planning_job_registries[canonical_directory] = registry
+        return registry
+
+
+def _execute_plan(server, request, job_guard=None, progress=None):
+    """Execute one lock-owned plan without retaining an HTTP handler."""
+    repository = SessionRepository(Path(request["project_directory"]))
+    document_fingerprint = request["document_fingerprint"]
+    session_id = request["session_id"]
+    message = request["message"]
+    job_guard = job_guard or (lambda: True)
+    progress = progress or (lambda stage: None)
+
+    def require_job_active():
+        if not job_guard():
+            raise CancelledPlanningJob("planning job is no longer active")
+
+    with server.planning_lock:
+        with server.session_lock:
+            require_job_active()
+            _require_current_session_context(
+                server, request, repository, active_session_id=session_id
+            )
+            _require_verified_binding(server, document_fingerprint)
+            repository.record_message(
+                document_fingerprint, session_id, role="user", content=message
+            )
+            conversation = repository.load_conversation(
+                document_fingerprint, session_id
+            )
+            session_directory = repository.session_directory(
+                document_fingerprint, session_id
+            )
+
+        def require_planning_context_locked():
+            require_job_active()
+            _require_current_session_context(
+                server, request, repository, active_session_id=session_id
+            )
+            binding = server.current_document_status
+            if (
+                not isinstance(binding, dict)
+                or binding.get("binding_status") != "bound"
+                or binding.get("rvt_mcp_status") != "verified"
+                or binding.get("document_fingerprint") != document_fingerprint
+            ):
+                raise ValueError("planning document context is no longer current")
+
+        def audit(tool_name, inputs, output, error):
+            with server.session_lock:
+                require_planning_context_locked()
+                repository.record_tool_event(
+                    document_fingerprint,
+                    session_id,
+                    tool_name=tool_name,
+                    inputs=inputs,
+                    output=output,
+                    error=error,
+                )
+
+        def guard_planning_context():
+            with server.session_lock:
+                require_planning_context_locked()
+
+        screenshot_directory = (session_directory / "screenshots").resolve()
+
+        def commit_screenshot(stable_path, image_bytes):
+            candidate = Path(stable_path).resolve()
+            if (
+                candidate.parent != screenshot_directory
+                or candidate.suffix.lower() != ".png"
+            ):
+                raise ValueError("planning screenshot destination is invalid")
+            with server.session_lock:
+                require_planning_context_locked()
+                screenshot_directory.mkdir(parents=True, exist_ok=True)
+                candidate.write_bytes(image_bytes)
+
+        result = server.planning_agent.plan(
+            conversation,
+            session_directory,
+            audit,
+            document_fingerprint=document_fingerprint,
+            session_guard=guard_planning_context,
+            screenshot_commit=commit_screenshot,
+            progress=progress,
+        )
+        payload = result.as_dict()
+        progress("persisting_result")
+        with server.session_lock:
+            require_planning_context_locked()
+            repository.record_message(
+                document_fingerprint,
+                session_id,
+                role="assistant",
+                content=json.dumps(payload, ensure_ascii=False),
+            )
+            machine_state = repository.load_machine_state(
+                document_fingerprint, session_id
+            )
+            machine_state["last_plan"] = payload
+            repository.save_machine_state(
+                document_fingerprint, session_id, machine_state
+            )
+        return payload
+
+
+def _run_plan_job(server, registry, job_id, request, identity):
+    try:
+        if not registry.is_active(job_id):
+            raise CancelledPlanningJob("planning job is no longer active")
+        registry.transition(job_id, "running", "validating_context")
+
+        def update_stage(stage):
+            if not registry.is_active(job_id):
+                raise CancelledPlanningJob("planning job is no longer active")
+            registry.transition(job_id, "running", stage)
+
+        payload = _execute_plan(
+            server,
+            request,
+            job_guard=lambda: registry.is_active(job_id),
+            progress=update_stage,
+        )
+        if not registry.is_active(job_id):
+            raise CancelledPlanningJob("planning job is no longer active")
+        registry.transition(job_id, "completed", "finished", result=payload)
+    except CancelledPlanningJob:
+        registry.cancel(job_id, identity)
+    except ModelApiError as error:
+        if registry.is_active(job_id):
+            registry.transition(
+                job_id,
+                "failed",
+                "finished",
+                error={
+                    "code": error.code,
+                    "message": str(error),
+                    "retryable": error.retryable,
+                },
+            )
+    except Exception as error:
+        if registry.is_active(job_id):
+            registry.transition(
+                job_id,
+                "failed",
+                "finished",
+                error={
+                    "code": "planning_failed",
+                    "message": str(error),
+                    "retryable": True,
+                },
+            )
+
+
 class AgentRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self):
-        if self.path != "/health":
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/v1/plan-jobs/"):
+            self._get_plan_job(parsed)
+            return
+        if parsed.path != "/health" or parsed.query:
             self.send_error(404)
             return
         self._write_json(
@@ -73,6 +313,12 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/v1/plans":
             self._create_plan()
+            return
+        if self.path == "/v1/plan-jobs":
+            self._submit_plan_job()
+            return
+        if self.path.startswith("/v1/plan-jobs/") and self.path.endswith("/cancel"):
+            self._cancel_plan_job()
             return
         if self.path == "/v1/document-status":
             self._handle_document_status()
@@ -332,104 +578,9 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             session_id = request["session_id"]
             if not isinstance(message, str) or not message.strip() or not isinstance(session_id, str):
                 raise ValueError("invalid planning request")
-            repository = self._session_repository(request)
-            document_fingerprint = self._document_fingerprint(request)
-            with self.server.planning_lock:
-                with self.server.session_lock:
-                    self._require_current_session_context(
-                        request, repository, active_session_id=session_id
-                    )
-                    binding = self.server.current_document_status
-                    if (
-                        not isinstance(binding, dict)
-                        or binding.get("binding_status") != "bound"
-                        or binding.get("rvt_mcp_status") != "verified"
-                        or binding.get("document_fingerprint") != document_fingerprint
-                    ):
-                        raise ValueError(
-                            "planning requires the current verified Revit document binding"
-                        )
-                    repository.record_message(
-                        document_fingerprint, session_id, role="user", content=message
-                    )
-                    conversation = repository.load_conversation(
-                        document_fingerprint, session_id
-                    )
-                    session_directory = repository.session_directory(
-                        document_fingerprint, session_id
-                    )
-
-                def audit(tool_name, inputs, output, error):
-                    with self.server.session_lock:
-                        self._require_current_session_context(
-                            request, repository, active_session_id=session_id
-                        )
-                        repository.record_tool_event(
-                            document_fingerprint,
-                            session_id,
-                            tool_name=tool_name,
-                            inputs=inputs,
-                            output=output,
-                            error=error,
-                        )
-
-                def require_planning_context_locked():
-                    self._require_current_session_context(
-                        request, repository, active_session_id=session_id
-                    )
-                    binding = self.server.current_document_status
-                    if (
-                        not isinstance(binding, dict)
-                        or binding.get("binding_status") != "bound"
-                        or binding.get("rvt_mcp_status") != "verified"
-                        or binding.get("document_fingerprint") != document_fingerprint
-                    ):
-                        raise ValueError("planning document context is no longer current")
-
-                def guard_planning_context():
-                    with self.server.session_lock:
-                        require_planning_context_locked()
-
-                screenshot_directory = (session_directory / "screenshots").resolve()
-
-                def commit_screenshot(stable_path, image_bytes):
-                    candidate = Path(stable_path).resolve()
-                    if (
-                        candidate.parent != screenshot_directory
-                        or candidate.suffix.lower() != ".png"
-                    ):
-                        raise ValueError("planning screenshot destination is invalid")
-                    with self.server.session_lock:
-                        require_planning_context_locked()
-                        screenshot_directory.mkdir(parents=True, exist_ok=True)
-                        candidate.write_bytes(image_bytes)
-
-                result = self.server.planning_agent.plan(
-                    conversation,
-                    session_directory,
-                    audit,
-                    document_fingerprint=document_fingerprint,
-                    session_guard=guard_planning_context,
-                    screenshot_commit=commit_screenshot,
-                )
-                payload = result.as_dict()
-                with self.server.session_lock:
-                    self._require_current_session_context(
-                        request, repository, active_session_id=session_id
-                    )
-                    repository.record_message(
-                        document_fingerprint,
-                        session_id,
-                        role="assistant",
-                        content=json.dumps(payload, ensure_ascii=False),
-                    )
-                    machine_state = repository.load_machine_state(
-                        document_fingerprint, session_id
-                    )
-                    machine_state["last_plan"] = payload
-                    repository.save_machine_state(
-                        document_fingerprint, session_id, machine_state
-                    )
+            self._session_repository(request)
+            self._document_fingerprint(request)
+            payload = _execute_plan(self.server, request)
             self._write_json(200, _response(request_id, "completed", payload))
         except ModelApiError as exc:
             self._write_json(502, _error(request_id, exc.code, str(exc), exc.retryable))
@@ -438,6 +589,181 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 400 if isinstance(exc, (KeyError, TypeError, ValueError)) else 503,
                 _error(request_id, "planning_failed", str(exc), True),
             )
+
+    def _submit_plan_job(self):
+        request_id = None
+        try:
+            request = self._read_session_request(
+                "analysis.plan.submit",
+                {
+                    "context_id",
+                    "document_fingerprint",
+                    "generation",
+                    "message",
+                    "panel_instance_id",
+                    "project_directory",
+                    "session_id",
+                },
+            )
+            request_id = request["request_id"]
+            message = request["message"]
+            session_id = request["session_id"]
+            if (
+                not isinstance(message, str)
+                or not message.strip()
+                or not isinstance(session_id, str)
+            ):
+                raise ValueError("invalid planning request")
+            repository = self._session_repository(request)
+            document_fingerprint = self._document_fingerprint(request)
+            self._panel_generation(request)
+            identity = _identity(request)
+            with self.server.session_lock:
+                _require_current_session_context(
+                    self.server,
+                    request,
+                    repository,
+                    active_session_id=session_id,
+                )
+                _require_verified_binding(self.server, document_fingerprint)
+                session_directory = repository.session_directory(
+                    document_fingerprint, session_id
+                )
+                registry = _registry_for(self.server, session_directory)
+                snapshot, created = registry.submit(identity, message)
+                if created:
+                    job_id = snapshot["job_id"]
+                    worker = threading.Thread(
+                        target=_run_plan_job,
+                        args=(self.server, registry, job_id, dict(request), identity),
+                        daemon=True,
+                        name="planning-job-{}".format(job_id),
+                    )
+                    self.server.planning_workers[job_id] = worker
+                    worker.start()
+            self._write_json(
+                202 if created else 200,
+                _response(request_id, "accepted", snapshot),
+            )
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            self._write_json(
+                400 if isinstance(exc, (KeyError, TypeError, ValueError)) else 503,
+                _error(request_id, "planning_failed", str(exc), True),
+            )
+
+    def _get_plan_job(self, parsed):
+        try:
+            path_parts = parsed.path.split("/")
+            if len(path_parts) != 4 or not path_parts[3]:
+                raise LookupError("planning job not found")
+            job_id = path_parts[3]
+            request = self._read_plan_job_query(parsed.query)
+            repository = self._session_repository(request)
+            document_fingerprint = self._document_fingerprint(request)
+            session_directory = repository.session_directory(
+                document_fingerprint, request["session_id"]
+            )
+            registry = _registry_for(self.server, session_directory)
+            with self.server.session_lock:
+                _require_current_job_identity_locked(
+                    self.server, request, repository
+                )
+                snapshot = registry.get(job_id, _identity(request))
+            if snapshot is None:
+                raise LookupError("planning job not found")
+            status = "cancelled" if snapshot["state"] == "cancelled" else "completed"
+            if snapshot["state"] in {"queued", "running"}:
+                status = "accepted"
+            self._write_json(
+                200,
+                _response("plan-job-status", status, snapshot),
+            )
+        except (KeyError, LookupError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            self._write_json(
+                404,
+                _error(
+                    "plan-job-status",
+                    "job_not_found",
+                    "Planning job was not found.",
+                    False,
+                ),
+            )
+
+    def _cancel_plan_job(self):
+        request_id = None
+        try:
+            parsed = urlparse(self.path)
+            path_parts = parsed.path.split("/")
+            if parsed.query or len(path_parts) != 5 or path_parts[4] != "cancel":
+                raise ValueError("invalid planning job cancellation path")
+            job_id = path_parts[3]
+            if not job_id:
+                raise ValueError("invalid planning job id")
+            request = self._read_session_request(
+                "analysis.plan.cancel",
+                {
+                    "context_id",
+                    "document_fingerprint",
+                    "generation",
+                    "panel_instance_id",
+                    "project_directory",
+                    "session_id",
+                },
+            )
+            request_id = request["request_id"]
+            repository = self._session_repository(request)
+            document_fingerprint = self._document_fingerprint(request)
+            session_directory = repository.session_directory(
+                document_fingerprint, request["session_id"]
+            )
+            registry = _registry_for(self.server, session_directory)
+            with self.server.session_lock:
+                _require_current_job_identity_locked(
+                    self.server, request, repository
+                )
+                snapshot = registry.cancel(job_id, _identity(request))
+            if snapshot is None:
+                raise LookupError("planning job not found")
+            status = "cancelled" if snapshot["state"] == "cancelled" else "completed"
+            self._write_json(200, _response(request_id, status, snapshot))
+        except LookupError:
+            self._write_json(
+                404,
+                _error(
+                    request_id,
+                    "job_not_found",
+                    "Planning job was not found.",
+                    False,
+                ),
+            )
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            self._write_json(
+                400,
+                _error(request_id, "invalid_request", "Request is invalid.", False),
+            )
+
+    @staticmethod
+    def _read_plan_job_query(query):
+        values = parse_qs(query, keep_blank_values=True)
+        required = {
+            "project_directory",
+            "panel_instance_id",
+            "generation",
+            "context_id",
+            "document_fingerprint",
+            "session_id",
+        }
+        if set(values) != required or any(len(items) != 1 for items in values.values()):
+            raise ValueError("invalid planning job query")
+        request = {key: items[0] for key, items in values.items()}
+        try:
+            generation = int(request["generation"])
+        except ValueError as error:
+            raise ValueError("invalid panel generation") from error
+        if generation < 0 or str(generation) != request["generation"]:
+            raise ValueError("invalid panel generation")
+        request["generation"] = generation
+        return request
 
     def _read_session_request(self, action, required_payload_keys):
         length = int(self.headers.get("Content-Length", "0"))
@@ -496,19 +822,9 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
     def _require_current_session_context(
         self, request, repository, active_session_id
     ):
-        context_id = request.get("context_id")
-        if not isinstance(context_id, str) or not context_id:
-            raise ValueError("invalid session context")
-        expected = (
-            request["panel_instance_id"],
-            request["generation"],
-            context_id,
-            str(repository.data_root),
-            request["document_fingerprint"],
-            active_session_id,
+        _require_current_session_context(
+            self.server, request, repository, active_session_id
         )
-        if self.server.session_context != expected:
-            raise ValueError("stale session context")
 
     def _handle_document_status(self):
         request_id = None
@@ -577,6 +893,9 @@ def create_server(config):
     server.document_status_lock = threading.Lock()
     server.session_lock = threading.Lock()
     server.planning_lock = threading.Lock()
+    server.planning_registries_lock = threading.Lock()
+    server.planning_job_registries = {}
+    server.planning_workers = {}
     server.session_context = None
     server.panel_generations = {}
     server.current_document_status = None
