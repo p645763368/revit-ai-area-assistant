@@ -7,7 +7,9 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 import tempfile
 import unittest
+from unittest.mock import patch
 
+import area_assistant_agent.server as server_module
 from area_assistant_agent.config import AgentConfig
 from area_assistant_agent.planning import PlanningResult
 from area_assistant_agent.planning_jobs import PlanningJobRegistry
@@ -63,6 +65,11 @@ class _CommitAfterReleasePlanner(_BlockingPlanner):
             None,
         )
         return super().plan(conversation, session_directory, audit, **kwargs)
+
+
+class _UnexpectedFailurePlanner:
+    def plan(self, conversation, session_directory, audit, **kwargs):
+        raise RuntimeError("private-diagnostic-marker-cedar-714")
 
 
 class AgentPlanningJobsApiTests(unittest.TestCase):
@@ -185,6 +192,31 @@ class AgentPlanningJobsApiTests(unittest.TestCase):
             self._wait_for_terminal(first["job_id"])["state"], "completed"
         )
 
+    def test_unknown_failure_uses_fixed_public_error_on_disk_and_http(self):
+        private_marker = "private-diagnostic-marker-cedar-714"
+        self.server.planning_agent = _UnexpectedFailurePlanner()
+
+        submitted = self._submit_plan_job("trigger unexpected failure")
+        terminal = self._wait_for_terminal(submitted["job_id"])
+        job_path = next(
+            Path(self.project.name).glob(
+                "AI_Area_Assistant_Data/documents/*/sessions/*/planning_jobs/*.json"
+            )
+        )
+        persisted = job_path.read_text(encoding="utf-8")
+
+        self.assertEqual(terminal["state"], "failed")
+        self.assertEqual(
+            terminal["error"],
+            {
+                "code": "planning_failed",
+                "message": "Planning failed.",
+                "retryable": True,
+            },
+        )
+        self.assertNotIn(private_marker, json.dumps(terminal))
+        self.assertNotIn(private_marker, persisted)
+
     def test_session_revocation_invalidates_running_job_without_late_commits(self):
         started = threading.Event()
         release = threading.Event()
@@ -240,6 +272,45 @@ class AgentPlanningJobsApiTests(unittest.TestCase):
         state = json.loads((session_directory / "state.json").read_text("utf-8"))
         self.assertNotIn("last_plan", state["session_state"])
 
+    def test_revoke_after_plan_commit_blocks_completed_job_publication(self):
+        committed = threading.Event()
+        allow_publication = threading.Event()
+        original_execute_plan = server_module._execute_plan
+
+        def pause_after_commit(*args, **kwargs):
+            payload = original_execute_plan(*args, **kwargs)
+            committed.set()
+            if not allow_publication.wait(2):
+                raise RuntimeError("test did not release result publication")
+            return payload
+
+        started = threading.Event()
+        planner_release = threading.Event()
+        planner_release.set()
+        self.server.planning_agent = _BlockingPlanner(started, planner_release)
+        with patch.object(server_module, "_execute_plan", pause_after_commit):
+            submitted = self._submit_plan_job("commit then revoke")
+            self.assertTrue(committed.wait(1))
+            try:
+                self._post(
+                    "/v1/sessions/revoke",
+                    "session.revoke",
+                    {
+                        "context_id": self.identity["context_id"],
+                        "generation": 2,
+                        "panel_instance_id": "panel-a",
+                    },
+                )
+            finally:
+                allow_publication.set()
+            self.server.planning_workers[submitted["job_id"]].join(2)
+
+        registry = next(iter(self.server.planning_job_registries.values()))
+        terminal = registry.get(submitted["job_id"], self._job_identity())
+        self.assertEqual(terminal["state"], "failed")
+        self.assertIsNone(terminal["result"])
+        self.assertEqual(terminal["error"]["code"], "planning_failed")
+
     def test_cross_context_poll_returns_versioned_job_not_found(self):
         started = threading.Event()
         release = threading.Event()
@@ -257,6 +328,29 @@ class AgentPlanningJobsApiTests(unittest.TestCase):
         envelope = json.loads(raised.exception.read().decode("utf-8"))
         self.assertEqual(envelope["contract_version"], "1.0")
         self.assertEqual(envelope["message_type"], "error")
+        self.assertEqual(envelope["code"], "job_not_found")
+
+    def test_completed_result_is_hidden_after_verified_binding_is_lost(self):
+        started = threading.Event()
+        release = threading.Event()
+        release.set()
+        self.server.planning_agent = _BlockingPlanner(started, release)
+        submitted = self._submit_plan_job("scan before binding loss")
+        self.assertEqual(
+            self._wait_for_terminal(submitted["job_id"])["state"], "completed"
+        )
+        with self.server.session_lock:
+            self.server.current_document_status = {
+                "binding_status": "paused",
+                "rvt_mcp_status": "unverified",
+                "document_fingerprint": "document-a",
+            }
+
+        with self.assertRaises(HTTPError) as raised:
+            self._get_plan_job(submitted["job_id"])
+
+        self.assertEqual(raised.exception.code, 404)
+        envelope = json.loads(raised.exception.read().decode("utf-8"))
         self.assertEqual(envelope["code"], "job_not_found")
 
     def test_poll_reloads_registry_and_marks_unfinished_job_interrupted(self):
@@ -345,6 +439,18 @@ class AgentPlanningJobsApiTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         return payload
+
+    def _job_identity(self):
+        return {
+            key: self.identity[key]
+            for key in (
+                "panel_instance_id",
+                "generation",
+                "context_id",
+                "document_fingerprint",
+                "session_id",
+            )
+        }
 
     def _post(self, path, action, payload):
         request_id = "req-" + action

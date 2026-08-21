@@ -2,6 +2,7 @@ import json
 import copy
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 
 from area_assistant_agent.planning import (
@@ -232,9 +233,11 @@ class PlanningAgentTests(unittest.TestCase):
         self.assertEqual(
             observed,
             [
+                "stage:requesting_model",
                 "model_request",
                 "stage:reading_model",
                 "model_read",
+                "stage:requesting_model",
                 "model_request",
                 "stage:capturing_evidence",
                 "capture",
@@ -243,6 +246,71 @@ class PlanningAgentTests(unittest.TestCase):
                 "stage:validating_result",
             ],
         )
+
+    def test_requesting_model_is_visible_while_direct_model_call_is_blocked(self):
+        started = threading.Event()
+        release = threading.Event()
+        observed = []
+        outcomes = []
+
+        class BlockingModel:
+            def planning_turn(self, messages, tools):
+                started.set()
+                if not release.wait(2):
+                    raise RuntimeError("test did not release model request")
+                return {
+                    "content": json.dumps(
+                        {
+                            "summary": "Direct result.",
+                            "question": "Choose one.",
+                            "options": [
+                                {
+                                    "id": "a",
+                                    "label": "A",
+                                    "recommended": True,
+                                    "rationale": "First.",
+                                    "impact": "Use A.",
+                                },
+                                {
+                                    "id": "b",
+                                    "label": "B",
+                                    "recommended": False,
+                                    "rationale": "Second.",
+                                    "impact": "Use B.",
+                                },
+                            ],
+                        }
+                    ),
+                    "tool_calls": [],
+                }
+
+        def run_plan():
+            try:
+                with tempfile.TemporaryDirectory() as directory:
+                    PlanningAgent(
+                        BlockingModel(),
+                        KnowledgeCatalog(ROOT / "knowledge"),
+                        _McpClient,
+                    ).plan(
+                        [{"role": "user", "content": "direct"}],
+                        Path(directory),
+                        lambda *args: None,
+                        progress=observed.append,
+                    )
+            except Exception as error:
+                outcomes.append(error)
+
+        worker = threading.Thread(target=run_plan)
+        worker.start()
+        self.assertTrue(started.wait(1))
+        self.assertFalse(release.is_set())
+        self.assertEqual(observed, ["requesting_model"])
+        release.set()
+        worker.join(2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(outcomes, [])
+        self.assertEqual(observed, ["requesting_model", "validating_result"])
 
     def test_progress_does_not_claim_evidence_stages_when_no_tools_are_used(self):
         observed = []

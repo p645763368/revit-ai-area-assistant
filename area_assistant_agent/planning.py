@@ -275,20 +275,17 @@ class PlanningAgent:
         progress: Optional[Callable[[str], None]] = None,
     ) -> PlanningResult:
         progress = progress or (lambda stage: None)
-        stage_order = {
-            "reading_model": 0,
-            "capturing_evidence": 1,
-            "requesting_model": 2,
-            "validating_result": 3,
+        public_stages = {
+            "reading_model",
+            "capturing_evidence",
+            "requesting_model",
+            "validating_result",
         }
-        current_stage = -1
 
         def report_progress(stage: str) -> None:
-            nonlocal current_stage
-            rank = stage_order[stage]
-            if rank > current_stage:
-                progress(stage)
-                current_stage = rank
+            if stage not in public_stages:
+                raise ValueError("invalid planning progress stage")
+            progress(stage)
 
         knowledge = self.knowledge.load()
         messages = [{
@@ -332,15 +329,10 @@ class PlanningAgent:
                 else "capture_view_image is not available on this MCP connection"
             )
             structured_geometry_available = False
-            model_evidence_collected = False
-            capture_attempted = False
             if screenshot_failure is not None:
                 audit("capture_revit_view", {}, None, screenshot_failure)
             for _ in range(self.max_turns):
-                if capture_attempted or (
-                    not capture_available and model_evidence_collected
-                ):
-                    report_progress("requesting_model")
+                report_progress("requesting_model")
                 turn = self.model_client.planning_turn(messages, tool_definitions)
                 calls = turn.get("tool_calls", [])
                 if calls:
@@ -392,11 +384,8 @@ class PlanningAgent:
                                 report_progress("reading_model")
                             if name == "capture_revit_view":
                                 report_progress("capturing_evidence")
-                                capture_attempted = True
                             execution = tools.execute(name, arguments)
                             audit(name, arguments, execution.audit_output, None)
-                            if name == "inspect_revit_model":
-                                model_evidence_collected = True
                             if (
                                 name == "inspect_revit_model"
                                 and arguments.get("query") == "boundary_candidates"
@@ -446,7 +435,6 @@ class PlanningAgent:
                 content = turn.get("content")
                 if not isinstance(content, str):
                     raise ValueError("model did not return a planning result")
-                report_progress("requesting_model")
                 report_progress("validating_result")
                 result = PlanningResult.from_dict(json.loads(content))
                 if screenshot_failure is not None and not structured_geometry_available:

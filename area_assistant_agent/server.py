@@ -88,6 +88,20 @@ def _require_verified_binding(server, document_fingerprint):
         raise ValueError("planning requires the current verified Revit document binding")
 
 
+def _require_active_planning_context_locked(
+    server, request, repository, job_guard=None
+):
+    if job_guard is not None and not job_guard():
+        raise CancelledPlanningJob("planning job is no longer active")
+    _require_current_session_context(
+        server,
+        request,
+        repository,
+        active_session_id=request["session_id"],
+    )
+    _require_verified_binding(server, request["document_fingerprint"])
+
+
 def _require_current_job_identity_locked(server, request, repository):
     panel_id = request.get("panel_instance_id")
     generation = request.get("generation")
@@ -136,17 +150,14 @@ def _execute_plan(server, request, job_guard=None, progress=None):
     job_guard = job_guard or (lambda: True)
     progress = progress or (lambda stage: None)
 
-    def require_job_active():
-        if not job_guard():
-            raise CancelledPlanningJob("planning job is no longer active")
+    def require_planning_context_locked():
+        _require_active_planning_context_locked(
+            server, request, repository, job_guard=job_guard
+        )
 
     with server.planning_lock:
         with server.session_lock:
-            require_job_active()
-            _require_current_session_context(
-                server, request, repository, active_session_id=session_id
-            )
-            _require_verified_binding(server, document_fingerprint)
+            require_planning_context_locked()
             repository.record_message(
                 document_fingerprint, session_id, role="user", content=message
             )
@@ -156,20 +167,6 @@ def _execute_plan(server, request, job_guard=None, progress=None):
             session_directory = repository.session_directory(
                 document_fingerprint, session_id
             )
-
-        def require_planning_context_locked():
-            require_job_active()
-            _require_current_session_context(
-                server, request, repository, active_session_id=session_id
-            )
-            binding = server.current_document_status
-            if (
-                not isinstance(binding, dict)
-                or binding.get("binding_status") != "bound"
-                or binding.get("rvt_mcp_status") != "verified"
-                or binding.get("document_fingerprint") != document_fingerprint
-            ):
-                raise ValueError("planning document context is no longer current")
 
         def audit(tool_name, inputs, output, error):
             with server.session_lock:
@@ -247,9 +244,15 @@ def _run_plan_job(server, registry, job_id, request, identity):
             job_guard=lambda: registry.is_active(job_id),
             progress=update_stage,
         )
-        if not registry.is_active(job_id):
-            raise CancelledPlanningJob("planning job is no longer active")
-        registry.transition(job_id, "completed", "finished", result=payload)
+        repository = SessionRepository(Path(request["project_directory"]))
+        with server.session_lock:
+            _require_active_planning_context_locked(
+                server,
+                request,
+                repository,
+                job_guard=lambda: registry.is_active(job_id),
+            )
+            registry.transition(job_id, "completed", "finished", result=payload)
     except CancelledPlanningJob:
         registry.cancel(job_id, identity)
     except ModelApiError as error:
@@ -264,7 +267,7 @@ def _run_plan_job(server, registry, job_id, request, identity):
                     "retryable": error.retryable,
                 },
             )
-    except Exception as error:
+    except Exception:
         if registry.is_active(job_id):
             registry.transition(
                 job_id,
@@ -272,7 +275,7 @@ def _run_plan_job(server, registry, job_id, request, identity):
                 "finished",
                 error={
                     "code": "planning_failed",
-                    "message": str(error),
+                    "message": "Planning failed.",
                     "retryable": True,
                 },
             )
@@ -669,6 +672,10 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                     self.server, request, repository
                 )
                 snapshot = registry.get(job_id, _identity(request))
+                if snapshot is not None and snapshot["state"] == "completed":
+                    _require_verified_binding(
+                        self.server, document_fingerprint
+                    )
             if snapshot is None:
                 raise LookupError("planning job not found")
             status = "cancelled" if snapshot["state"] == "cancelled" else "completed"
@@ -854,7 +861,8 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                         client=client,
                         binding_store=self.server.binding_store,
                     )
-                self.server.current_document_status = response["payload"]
+                with self.server.session_lock:
+                    self.server.current_document_status = response["payload"]
             self._write_json(200, response)
         except (KeyError, RuntimeError, TypeError, ValueError) as exc:
             self._write_json(
