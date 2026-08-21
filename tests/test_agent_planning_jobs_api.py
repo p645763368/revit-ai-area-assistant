@@ -74,7 +74,7 @@ class _UnexpectedFailurePlanner:
 
 class AgentPlanningJobsApiTests(unittest.TestCase):
     def setUp(self):
-        config = AgentConfig(
+        self.config = AgentConfig(
             "127.0.0.1",
             0,
             "http://127.0.0.1:1/v1",
@@ -82,7 +82,7 @@ class AgentPlanningJobsApiTests(unittest.TestCase):
             "test-model",
             1,
         )
-        self.server = create_server(config)
+        self.server = create_server(self.config)
         self.server.current_document_status = {
             "binding_status": "bound",
             "rvt_mcp_status": "verified",
@@ -353,6 +353,29 @@ class AgentPlanningJobsApiTests(unittest.TestCase):
         envelope = json.loads(raised.exception.read().decode("utf-8"))
         self.assertEqual(envelope["code"], "job_not_found")
 
+    def test_restart_without_active_session_hides_persisted_completed_result(self):
+        started = threading.Event()
+        release = threading.Event()
+        release.set()
+        self.server.planning_agent = _BlockingPlanner(started, release)
+        submitted = self._submit_plan_job("complete before restart")
+        self.assertEqual(
+            self._wait_for_terminal(submitted["job_id"])["state"], "completed"
+        )
+        self._restart_server_without_session()
+        self.server.current_document_status = {
+            "binding_status": "bound",
+            "rvt_mcp_status": "verified",
+            "document_fingerprint": "document-a",
+        }
+
+        with self.assertRaises(HTTPError) as raised:
+            self._get_plan_job(submitted["job_id"])
+
+        self.assertEqual(raised.exception.code, 404)
+        envelope = json.loads(raised.exception.read().decode("utf-8"))
+        self.assertEqual(envelope["code"], "job_not_found")
+
     def test_poll_reloads_registry_and_marks_unfinished_job_interrupted(self):
         session_directory = next(
             Path(self.project.name).glob(
@@ -374,7 +397,7 @@ class AgentPlanningJobsApiTests(unittest.TestCase):
             "persisted scan",
         )
         registry.transition(job["job_id"], "running", "reading_model")
-        self.server.planning_job_registries.clear()
+        self._restart_server_without_session()
 
         recovered = self._get_plan_job(job["job_id"])
 
@@ -451,6 +474,17 @@ class AgentPlanningJobsApiTests(unittest.TestCase):
                 "session_id",
             )
         }
+
+    def _restart_server_without_session(self):
+        for worker in self.server.planning_workers.values():
+            worker.join(2)
+        self.server.shutdown()
+        self.server.server_close()
+        self.server = create_server(self.config)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.assertIsNone(self.server.session_context)
+        self.assertEqual(self.server.panel_generations, {})
 
     def _post(self, path, action, payload):
         request_id = "req-" + action

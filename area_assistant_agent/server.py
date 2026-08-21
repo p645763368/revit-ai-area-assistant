@@ -673,8 +673,8 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 )
                 snapshot = registry.get(job_id, _identity(request))
                 if snapshot is not None and snapshot["state"] == "completed":
-                    _require_verified_binding(
-                        self.server, document_fingerprint
+                    _require_active_planning_context_locked(
+                        self.server, request, repository
                     )
             if snapshot is None:
                 raise LookupError("planning job not found")
