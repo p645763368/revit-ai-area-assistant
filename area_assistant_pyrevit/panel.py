@@ -478,6 +478,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
     def _submit_plan_job(
         self, message, context, poll_generation, retry_terminal=False
     ):
+        attempt_retry_terminal = retry_terminal
         while self._planning_poll_is_current(context, poll_generation):
             try:
                 snapshot = self._client.submit_plan_job(
@@ -488,10 +489,11 @@ class AiAreaAssistantPanel(forms.WPFPanel):
                     context[0],
                     context[4],
                     message,
-                    retry_terminal,
+                    attempt_retry_terminal,
                 )
                 break
             except PlanJobTransportError:
+                attempt_retry_terminal = False
                 self._dispatch(
                     lambda session=context, generation=poll_generation: self._planning_submit_connection_failed(
                         session, generation

@@ -285,6 +285,31 @@ class _DefinitiveSubmitClient(_SessionClient):
         raise self.error_type(self.message)
 
 
+class _LostExplicitRetryResponseClient(_SessionClient):
+    def __init__(self, error_type):
+        super().__init__()
+        self.error_type = error_type
+        self.retry_terminal_values = []
+
+    def submit_plan_job(self, *args):
+        retry_terminal = args[-1]
+        self.retry_terminal_values.append(retry_terminal)
+        if len(self.retry_terminal_values) == 1:
+            raise self.error_type("terminal retry was accepted before response loss")
+        return dict(
+            _plan_job_snapshot(
+                "interrupted",
+                "finished",
+                error={
+                    "code": "agent_restarted",
+                    "message": "Agent restarted before completion.",
+                    "retryable": True,
+                },
+            ),
+            job_id="job-2",
+        )
+
+
 class _CallbackWait:
     def __init__(self, callback):
         self.callback = callback
@@ -846,6 +871,22 @@ class PyRevitPanelTests(unittest.TestCase):
         self.assertEqual(client.submit_count, 2)
         self.assertEqual(client.retry_terminal_values, [False, True])
         self.assertIn("推荐方案", panel.Option1Button.Content)
+
+    def test_ambiguous_explicit_retry_consumes_terminal_flag_before_recovery(self):
+        panel_module = _load_panel_module()
+        client = _LostExplicitRetryResponseClient(
+            panel_module.PlanJobTransportError
+        )
+        panel = _make_planning_panel(panel_module, client)
+        panel._last_message = "扫描当前模型"
+        panel._planning_terminal_retry_available = True
+
+        with patch.object(panel_module.threading, "Event", _ImmediateWait):
+            panel.retry_click(None, None)
+
+        self.assertEqual(client.retry_terminal_values, [True, False])
+        self.assertEqual(panel.ConnectionState.Text, "规划已中断")
+        self.assertTrue(panel.RetryButton.IsEnabled)
 
     def test_clickable_recommendation_continues_planning_in_current_session(self):
         panel_module = _load_panel_module()

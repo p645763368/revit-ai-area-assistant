@@ -167,6 +167,38 @@ class PlanningJobRegistryTests(unittest.TestCase):
         self.assertEqual(duplicate_retry["job_id"], retried["job_id"])
         self.assertFalse(duplicate_created)
 
+    def test_lost_terminal_retry_response_then_restart_dedups_replacement(self):
+        old_job, _ = self.registry.submit(self.identity, "restart scan")
+        self.registry.cancel(old_job["job_id"], self.identity)
+        replacement, replacement_created = self.registry.submit(
+            self.identity, "restart scan", retry_terminal=True
+        )
+        # Recreating before the recovery submit simulates the Agent accepting
+        # the explicit retry, losing its response, and then restarting.
+        restored = PlanningJobRegistry(
+            self.storage_root,
+            clock=lambda: "2026-08-21T10:01:00+00:00",
+            id_factory=lambda: "job-3",
+        )
+        recovered, recovered_created = restored.submit(
+            self.identity, "restart scan", retry_terminal=False
+        )
+        persisted = {
+            path.stem: json.loads(path.read_text(encoding="utf-8"))
+            for path in self.storage_root.glob("*.json")
+        }
+
+        self.assertTrue(replacement_created)
+        self.assertLess(old_job["job_id"], replacement["job_id"])
+        self.assertEqual(recovered["job_id"], replacement["job_id"])
+        self.assertEqual(recovered["state"], "interrupted")
+        self.assertFalse(recovered_created)
+        self.assertEqual(len(persisted), 2)
+        self.assertEqual(persisted[old_job["job_id"]]["idempotency_generation"], 0)
+        self.assertEqual(
+            persisted[replacement["job_id"]]["idempotency_generation"], 1
+        )
+
     def test_explicit_retry_never_replaces_completed_job(self):
         job, _ = self.registry.submit(self.identity, "scan")
         self.registry.transition(job["job_id"], "running", "reading_model")
@@ -242,6 +274,31 @@ class PlanningJobRegistryTests(unittest.TestCase):
         self.assertIsNotNone(restored.get(valid_job["job_id"], self.identity))
         self.assertIsNone(restored.get("unsafe", self.identity))
 
+    def test_malformed_idempotency_generations_are_isolated(self):
+        valid_job, _ = self.registry.submit(self.identity, "valid scan")
+        valid_path = next(self.storage_root.glob("*.json"))
+        valid_record = json.loads(valid_path.read_text(encoding="utf-8"))
+        for job_id, generation in (
+            ("negative-generation", -1),
+            ("boolean-generation", True),
+            ("string-generation", "1"),
+        ):
+            malformed = dict(
+                valid_record,
+                job_id=job_id,
+                idempotency_generation=generation,
+            )
+            (self.storage_root / (job_id + ".json")).write_text(
+                json.dumps(malformed), encoding="utf-8"
+            )
+
+        restored = PlanningJobRegistry(self.storage_root)
+
+        self.assertIsNotNone(restored.get(valid_job["job_id"], self.identity))
+        self.assertIsNone(restored.get("negative-generation", self.identity))
+        self.assertIsNone(restored.get("boolean-generation", self.identity))
+        self.assertIsNone(restored.get("string-generation", self.identity))
+
     def test_persisted_json_contains_only_snapshot_and_safe_request_metadata(self):
         job, _ = self.registry.submit(self.identity, "  scan   model ")
         job["result"] = {"tampered": True}
@@ -260,9 +317,11 @@ class PlanningJobRegistryTests(unittest.TestCase):
                 "result",
                 "error",
                 "identity",
+                "idempotency_generation",
                 "idempotency_key",
             },
         )
+        self.assertEqual(persisted["idempotency_generation"], 0)
         self.assertEqual(persisted["identity"], self.identity)
         self.assertNotIn("scan", json.dumps(persisted))
         self.assertIsNone(self.registry.get(job["job_id"], self.identity)["result"])

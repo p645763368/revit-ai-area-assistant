@@ -75,6 +75,7 @@ class PlanningJobRegistry:
             normalized_identity, normalized_message
         )
         with self._lock:
+            idempotency_generation = 0
             existing_id = self._idempotency_index.get(idempotency_key)
             if existing_id is not None:
                 existing = self._jobs.get(existing_id)
@@ -84,6 +85,9 @@ class PlanningJobRegistry:
                     }
                     if not retry_terminal or not replaceable_terminal:
                         return self._snapshot(existing), False
+                    idempotency_generation = (
+                        existing["idempotency_generation"] + 1
+                    )
 
             job_id = self._new_job_id()
             timestamp = self._timestamp()
@@ -96,6 +100,7 @@ class PlanningJobRegistry:
                 "result": None,
                 "error": None,
                 "identity": normalized_identity,
+                "idempotency_generation": idempotency_generation,
                 "idempotency_key": idempotency_key,
             }
             self._write_record(record)
@@ -189,15 +194,24 @@ class PlanningJobRegistry:
                     job_id = record["job_id"]
                     idempotency_key = record["idempotency_key"]
                     self._jobs[job_id] = record
-                    self._idempotency_index.setdefault(idempotency_key, job_id)
+                    current_owner_id = self._idempotency_index.get(idempotency_key)
+                    if current_owner_id is None or self._idempotency_owner_key(
+                        record
+                    ) > self._idempotency_owner_key(
+                        self._jobs[current_owner_id]
+                    ):
+                        self._idempotency_index[idempotency_key] = job_id
                 except (OSError, TypeError, ValueError, json.JSONDecodeError):
                     continue
 
     def _validate_record(self, record: Any, path: Path) -> None:
         if not isinstance(record, dict):
             raise ValueError("stored planning job must be an object")
-        required = set(PUBLIC_SNAPSHOT_FIELDS) | {"identity", "idempotency_key"}
-        if set(record) != required:
+        required = set(PUBLIC_SNAPSHOT_FIELDS) | {
+            "identity", "idempotency_generation", "idempotency_key"
+        }
+        legacy_required = required - {"idempotency_generation"}
+        if set(record) not in (required, legacy_required):
             raise ValueError("stored planning job has an invalid shape")
         if not isinstance(record["job_id"], str) or record["job_id"] != path.stem:
             raise ValueError("stored planning job has an invalid id")
@@ -209,15 +223,23 @@ class PlanningJobRegistry:
             raise ValueError("stored planning job has an invalid identity")
         if not isinstance(record["idempotency_key"], str):
             raise ValueError("stored planning job has an invalid idempotency key")
+        generation = record.get("idempotency_generation", 0)
+        if type(generation) is not int or generation < 0:
+            raise ValueError("stored planning job has an invalid generation")
 
     def _sanitize_loaded_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
         candidate = deepcopy(record)
+        candidate.setdefault("idempotency_generation", 0)
         candidate["result"], candidate["error"] = self._safe_payload(
             record["state"], record["result"], record["error"]
         )
         if candidate != record:
             self._write_record(candidate)
         return candidate
+
+    @staticmethod
+    def _idempotency_owner_key(record: Dict[str, Any]) -> Tuple[int, str]:
+        return record["idempotency_generation"], record["job_id"]
 
     @staticmethod
     def _safe_payload(
