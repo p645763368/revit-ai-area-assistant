@@ -433,6 +433,11 @@ class PyRevitAgentClientTests(unittest.TestCase):
         self.assertEqual(request["payload"]["session_id"], "session-a")
 
     def test_panel_client_submits_polls_and_cancels_plan_jobs_with_short_requests(self):
+        client = AgentClient(
+            "http://127.0.0.1:{}".format(self.server.server_port),
+            timeout_seconds=50,
+            job_timeout_seconds=2.0,
+        )
         identity = {
             "project_directory": "C:\\test",
             "document_fingerprint": "document-a",
@@ -446,7 +451,8 @@ class PyRevitAgentClientTests(unittest.TestCase):
             "area_assistant_pyrevit.client.urlopen",
             wraps=__import__("area_assistant_pyrevit.client", fromlist=["urlopen"]).urlopen,
         ) as open_request:
-            submitted = self.client.submit_plan_job(
+            self.assertTrue(client.is_ready())
+            submitted = client.submit_plan_job(
                 identity["project_directory"],
                 identity["document_fingerprint"],
                 identity["context_id"],
@@ -455,15 +461,15 @@ class PyRevitAgentClientTests(unittest.TestCase):
                 identity["session_id"],
                 "scan",
             )
-            polled = self.client.get_plan_job("job-a", identity)
-            cancelled = self.client.cancel_plan_job("job-a", identity)
+            polled = client.get_plan_job("job-a", identity)
+            cancelled = client.cancel_plan_job("job-a", identity)
 
         self.assertEqual(submitted["state"], "queued")
         self.assertEqual(polled["state"], "running")
         self.assertEqual(cancelled["state"], "cancelled")
         self.assertEqual(
             [call.kwargs["timeout"] for call in open_request.call_args_list],
-            [self.client.timeout_seconds] * 3,
+            [50, 2.0, 2.0, 2.0],
         )
         submit_request = self.server.requests[-3][1]
         poll_request = self.server.requests[-2][1]
@@ -473,6 +479,28 @@ class PyRevitAgentClientTests(unittest.TestCase):
         self.assertEqual(poll_request["query"], {key: [str(value)] for key, value in identity.items()})
         self.assertEqual(cancel_request["action"], "analysis.plan.cancel")
         self.assertEqual(cancel_request["payload"], identity)
+
+    def test_plan_job_timeout_defaults_to_the_general_timeout(self):
+        client = AgentClient(
+            "http://127.0.0.1:{}".format(self.server.server_port),
+            timeout_seconds=3,
+        )
+        identity = {
+            "project_directory": "C:\\test",
+            "document_fingerprint": "document-a",
+            "context_id": "context-a",
+            "panel_instance_id": "panel-a",
+            "generation": 1,
+            "session_id": "session-a",
+        }
+
+        with patch(
+            "area_assistant_pyrevit.client.urlopen",
+            wraps=__import__("area_assistant_pyrevit.client", fromlist=["urlopen"]).urlopen,
+        ) as open_request:
+            client.get_plan_job("job-a", identity)
+
+        self.assertEqual(open_request.call_args.kwargs["timeout"], 3)
 
     def test_panel_client_rejects_invalid_job_snapshots_and_propagates_versioned_errors(self):
         identity = {

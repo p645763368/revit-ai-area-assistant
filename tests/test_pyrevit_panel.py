@@ -3,6 +3,7 @@ import importlib
 import io
 import sys
 import threading
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -15,6 +16,17 @@ class _Control:
 
     def AppendText(self, text):
         self.Text += text
+
+
+class _ClickEvent:
+    def __iadd__(self, callback):
+        return self
+
+
+class _ButtonControl(_Control):
+    def __init__(self):
+        _Control.__init__(self)
+        self.Click = _ClickEvent()
 
 
 class _InterruptedClient:
@@ -165,6 +177,19 @@ class _BlockingPlanJobClient(_SessionClient):
         return _plan_job_snapshot("completed", "finished", result=_plan_result())
 
 
+class _BlockingCancelThenRevokeClient(_SessionClient):
+    def __init__(self):
+        super().__init__()
+        self.cancel_started = threading.Event()
+        self.release_cancel = threading.Event()
+
+    def cancel_plan_job(self, job_id, identity):
+        self.calls.append(("cancel", job_id, identity))
+        self.cancel_started.set()
+        self.release_cancel.wait(2)
+        return _plan_job_snapshot("cancelled", "finished")
+
+
 class _ExistingPlanJobClient(_SessionClient):
     def __init__(self):
         super().__init__()
@@ -216,6 +241,33 @@ class _InterruptedPlanJobClient(_SessionClient):
                 "retryable": True,
             },
         )
+
+
+class _AmbiguousSubmitClient(_SessionClient):
+    def __init__(self, error_type):
+        super().__init__()
+        self.error_type = error_type
+        self.submissions = []
+        self.logical_job_count = 0
+
+    def submit_plan_job(self, *args):
+        self.submissions.append(args)
+        if len(self.submissions) == 1:
+            self.logical_job_count += 1
+            raise self.error_type("response lost after server accepted job")
+        return _plan_job_snapshot("queued", "accepted")
+
+    def get_plan_job(self, job_id, identity):
+        return _plan_job_snapshot("completed", "finished", result=_plan_result())
+
+
+class _CallbackWait:
+    def __init__(self, callback):
+        self.callback = callback
+
+    def wait(self, timeout):
+        self.callback(timeout)
+        return False
 
 
 class _SwitchingClient:
@@ -389,6 +441,121 @@ def _make_planning_panel(panel_module, client):
 
 
 class PyRevitPanelTests(unittest.TestCase):
+    def test_panel_configures_two_second_job_requests_and_keeps_general_timeout(self):
+        panel_module = _load_panel_module()
+        observed = []
+
+        class RecordingAgentClient:
+            def __init__(self, base_url, **kwargs):
+                observed.append((base_url, kwargs))
+
+        panel = panel_module.AiAreaAssistantPanel.__new__(
+            panel_module.AiAreaAssistantPanel
+        )
+        for name in (
+            "SendButton", "AnalyzeButton", "Option1Button", "Option2Button",
+            "Option3Button", "Option4Button", "RetryButton",
+            "RefreshDocumentButton", "ContinueSessionButton", "NewSessionButton",
+            "ReadSelectionButton", "PickSelectionButton", "HighlightSelectionButton",
+            "AnalyzeSelectionButton",
+        ):
+            setattr(panel, name, _ButtonControl())
+        for name in (
+            "ConnectionState", "ConnectionDetail", "DocumentState",
+            "DocumentDetail", "SelectionState", "SelectionDetail", "SessionState",
+        ):
+            setattr(panel, name, _Control())
+        panel._subscribe_document_changes = lambda: None
+        panel._run_background = lambda callback: None
+
+        with patch.object(panel_module, "AgentClient", RecordingAgentClient):
+            panel_module.AiAreaAssistantPanel.__init__(panel)
+
+        self.assertEqual(
+            observed,
+            [
+                (
+                    "http://127.0.0.1:8765",
+                    {"timeout_seconds": 50, "job_timeout_seconds": 2.0},
+                )
+            ],
+        )
+
+    def test_blocking_poll_shows_reconnecting_after_job_timeout_not_general_timeout(self):
+        panel_module = _load_panel_module()
+        client = panel_module.AgentClient(
+            "http://127.0.0.1:1",
+            timeout_seconds=50,
+            job_timeout_seconds=0.03,
+        )
+        panel = _make_planning_panel(panel_module, client)
+        context = panel._session_context()
+        panel._planning_job_id = "job-1"
+        panel._planning_job_context = context
+        panel._planning_poll_generation = 4
+        self.assertTrue(panel._planning_poll_is_current(context, 4, "job-1"))
+        observed_timeouts = []
+
+        def blocking_poll(request, timeout):
+            observed_timeouts.append(timeout)
+            threading.Event().wait(timeout)
+            raise OSError("controlled timeout")
+
+        def dispatch_once(callback):
+            callback()
+            if panel.ConnectionState.Text == "仍在等待":
+                panel._planning_poll_generation += 1
+
+        panel._dispatch = dispatch_once
+        started_at = time.monotonic()
+        with patch.dict(
+            client._read_plan_job_response.__func__.__globals__,
+            {"urlopen": blocking_poll},
+        ):
+            panel._poll_plan_job("job-1", context, 4)
+        elapsed = time.monotonic() - started_at
+
+        self.assertEqual(observed_timeouts, [0.03])
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual(panel.ConnectionState.Text, "仍在等待")
+        self.assertEqual(
+            panel.ConnectionDetail.Text,
+            "仍在等待，本次状态查询失败，正在重新连接…",
+        )
+
+    def test_ambiguous_submit_retries_identically_without_enabling_distinct_submit(self):
+        panel_module = _load_panel_module()
+        client = _AmbiguousSubmitClient(panel_module.AgentConnectionError)
+        panel = _make_planning_panel(panel_module, client)
+        observed_during_wait = []
+
+        def attempt_distinct_submit(timeout):
+            observed_during_wait.append(
+                (
+                    timeout,
+                    panel.SendButton.IsEnabled,
+                    panel.AnalyzeButton.IsEnabled,
+                    panel.RetryButton.IsEnabled,
+                    panel._planning_job_context,
+                )
+            )
+            panel._request_plan("不同的付费规划")
+
+        with patch.object(
+            panel_module.threading,
+            "Event",
+            lambda: _CallbackWait(attempt_distinct_submit),
+        ):
+            panel._request_plan("扫描当前模型")
+
+        self.assertEqual(len(client.submissions), 2)
+        self.assertEqual(client.submissions[0], client.submissions[1])
+        self.assertEqual(client.logical_job_count, 1)
+        self.assertEqual(observed_during_wait[0][:4], (1.0, False, False, False))
+        self.assertIsNotNone(observed_during_wait[0][4])
+        self.assertNotIn("不同的付费规划", panel.Transcript.Text)
+        self.assertIn("推荐方案", panel.Option1Button.Content)
+
     def test_plan_poll_recovers_without_duplicate_paid_submission(self):
         panel_module = _load_panel_module()
         panel = panel_module.AiAreaAssistantPanel.__new__(
@@ -488,6 +655,48 @@ class PyRevitPanelTests(unittest.TestCase):
             ["cancel", "revoke"],
         )
         self.assertEqual(panel._client.calls[0][1], "job-1")
+
+    def test_document_switch_returns_before_background_cancel_then_revoke(self):
+        panel_module = _load_panel_module()
+        client = _BlockingCancelThenRevokeClient()
+        panel = _make_planning_panel(panel_module, client)
+        context = panel._session_context()
+        panel._planning_job_id = "job-1"
+        panel._planning_job_context = context
+        panel._planning_poll_generation = 7
+        workers = []
+
+        def run_background(callback):
+            worker = threading.Thread(target=callback)
+            worker.daemon = True
+            worker.start()
+            workers.append(worker)
+
+        panel._run_background = run_background
+        ui_returned = threading.Event()
+
+        def invoke_view_activated_pause():
+            panel._pause_session_for_document_change()
+            ui_returned.set()
+
+        ui_thread = threading.Thread(target=invoke_view_activated_pause)
+        ui_thread.start()
+        self.assertTrue(client.cancel_started.wait(1))
+        try:
+            self.assertTrue(ui_returned.wait(0.2))
+            self.assertIsNone(panel._session_id)
+            self.assertIsNone(panel._session_context_id)
+            self.assertIsNone(panel._planning_job_id)
+            self.assertEqual([call[0] for call in client.calls], ["cancel"])
+        finally:
+            client.release_cancel.set()
+            ui_thread.join(2)
+            for worker in workers:
+                worker.join(2)
+
+        self.assertFalse(ui_thread.is_alive())
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual([call[0] for call in client.calls], ["cancel", "revoke"])
 
     def test_reopened_panel_polling_existing_job_does_not_resubmit(self):
         panel_module = _load_panel_module()

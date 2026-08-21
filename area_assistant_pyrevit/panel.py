@@ -39,6 +39,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._client = AgentClient(
             "http://127.0.0.1:{}".format(port),
             timeout_seconds=50,
+            job_timeout_seconds=2.0,
         )
         self._last_message = None
         self._document_pause_reason = None
@@ -461,25 +462,30 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         )
 
     def _submit_plan_job(self, message, context, poll_generation):
-        if not self._planning_poll_is_current(context, poll_generation):
-            return
-        try:
-            snapshot = self._client.submit_plan_job(
-                context[1],
-                context[2],
-                context[3],
-                self._panel_instance_id,
-                context[0],
-                context[4],
-                message,
-            )
-        except AgentConnectionError as exc:
-            text = str(exc)
-            self._dispatch(
-                lambda message=text, session=context, generation=poll_generation: self._plan_job_submission_failed(
-                    message, session, generation
+        while self._planning_poll_is_current(context, poll_generation):
+            try:
+                snapshot = self._client.submit_plan_job(
+                    context[1],
+                    context[2],
+                    context[3],
+                    self._panel_instance_id,
+                    context[0],
+                    context[4],
+                    message,
                 )
-            )
+                break
+            except AgentConnectionError:
+                self._dispatch(
+                    lambda session=context, generation=poll_generation: self._planning_submit_connection_failed(
+                        session, generation
+                    )
+                )
+                if not self._planning_poll_is_current(
+                    context, poll_generation
+                ):
+                    return
+                threading.Event().wait(1.0)
+        else:
             return
         if not self._planning_poll_is_current(context, poll_generation):
             return
@@ -575,12 +581,13 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             "仍在等待，本次状态查询失败，正在重新连接…",
         )
 
-    def _plan_job_submission_failed(self, message, context, poll_generation):
+    def _planning_submit_connection_failed(self, context, poll_generation):
         if not self._planning_poll_is_current(context, poll_generation):
             return
-        self._planning_job_id = None
-        self._planning_job_context = None
-        self._reply_failed(message, True, context)
+        self._set_status(
+            "仍在等待",
+            "规划提交结果未确认，正在使用同一请求重新连接…",
+        )
 
     def _planning_poll_is_current(
         self, context, poll_generation, job_id=None
@@ -879,24 +886,47 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self.ContinueSessionButton.IsEnabled = False
         self.NewSessionButton.IsEnabled = False
         self._set_session_status("文档已切换；旧会话已暂停，正在读取新文档")
-        if planning_job_id is not None and planning_job_context is not None:
-            self._cancel_plan_job(planning_job_id, planning_job_context)
-        if context_id is not None:
-            if after_revoke is None:
-                self._revoke_session(next_version, context_id)
-            else:
+        if context_id is not None or (
+            planning_job_id is not None and planning_job_context is not None
+        ):
+            if after_revoke is not None and context_id is not None:
                 self._pending_session_revoke = (
                     next_version,
                     context_id,
                     after_revoke,
                 )
-                self._run_background(
-                    lambda: self._revoke_then_continue(
-                        next_version, context_id, after_revoke
-                    )
+            self._run_background(
+                lambda: self._cancel_plan_then_revoke(
+                    planning_job_id,
+                    planning_job_context,
+                    next_version,
+                    context_id,
+                    after_revoke,
                 )
+            )
         elif after_revoke is not None:
             after_revoke()
+
+    def _cancel_plan_then_revoke(
+        self,
+        job_id,
+        job_context,
+        generation,
+        context_id,
+        callback,
+    ):
+        if job_id is not None and job_context is not None:
+            self._cancel_plan_job(job_id, job_context)
+        if context_id is None:
+            if callback is not None:
+                self._dispatch(
+                    lambda: self._continue_after_revoke(generation, callback)
+                )
+            return
+        if callback is None:
+            self._revoke_session(generation, context_id)
+            return
+        self._revoke_then_continue(generation, context_id, callback)
 
     def _cancel_plan_job(self, job_id, context):
         try:

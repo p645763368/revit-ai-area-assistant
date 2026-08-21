@@ -229,6 +229,7 @@ class AgentClient:
         base_url="http://127.0.0.1:8765",
         timeout_seconds=2,
         planning_timeout_seconds=None,
+        job_timeout_seconds=None,
     ):
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
@@ -236,6 +237,11 @@ class AgentClient:
             timeout_seconds
             if planning_timeout_seconds is None
             else planning_timeout_seconds
+        )
+        self.job_timeout_seconds = (
+            timeout_seconds
+            if job_timeout_seconds is None
+            else job_timeout_seconds
         )
 
     def is_ready(self):
@@ -543,7 +549,7 @@ class AgentClient:
 
     def _read_plan_job_response(self, request, request_id, operation):
         try:
-            response = urlopen(request, timeout=self.timeout_seconds)
+            response = urlopen(request, timeout=self.job_timeout_seconds)
             try:
                 envelope = json.loads(response.read().decode("utf-8"))
             finally:
