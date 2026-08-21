@@ -163,24 +163,24 @@ class PlanningJobRegistry:
                 try:
                     record = json.loads(path.read_text(encoding="utf-8"))
                     self._validate_record(record, path)
+                    record = self._sanitize_loaded_record(record)
+                    if record["state"] in NON_TERMINAL_STATES:
+                        candidate = deepcopy(record)
+                        candidate["state"] = "interrupted"
+                        candidate["error"] = {
+                            "code": "agent_restarted",
+                            "message": "The Agent restarted before planning completed.",
+                            "retryable": True,
+                        }
+                        candidate["updated_at"] = self._timestamp()
+                        self._write_record(candidate)
+                        record = candidate
+                    job_id = record["job_id"]
+                    idempotency_key = record["idempotency_key"]
+                    self._jobs[job_id] = record
+                    self._idempotency_index.setdefault(idempotency_key, job_id)
                 except (OSError, TypeError, ValueError, json.JSONDecodeError):
                     continue
-                record = self._sanitize_loaded_record(record)
-                if record["state"] in NON_TERMINAL_STATES:
-                    candidate = deepcopy(record)
-                    candidate["state"] = "interrupted"
-                    candidate["error"] = {
-                        "code": "agent_restarted",
-                        "message": "The Agent restarted before planning completed.",
-                        "retryable": True,
-                    }
-                    candidate["updated_at"] = self._timestamp()
-                    self._write_record(candidate)
-                    record = candidate
-                job_id = record["job_id"]
-                idempotency_key = record["idempotency_key"]
-                self._jobs[job_id] = record
-                self._idempotency_index.setdefault(idempotency_key, job_id)
 
     def _validate_record(self, record: Any, path: Path) -> None:
         if not isinstance(record, dict):
@@ -219,6 +219,10 @@ class PlanningJobRegistry:
         if state == "failed":
             if result is not None:
                 raise ValueError("failed planning job cannot contain a result")
+            return None, PlanningJobRegistry._sanitize_error(error)
+        if state == "interrupted":
+            if result is not None:
+                raise ValueError("interrupted planning job cannot contain a result")
             return None, PlanningJobRegistry._sanitize_error(error)
         if result is not None or error is not None:
             raise ValueError("non-terminal planning job contains a payload")

@@ -116,6 +116,56 @@ class PlanningJobRegistryTests(unittest.TestCase):
         self.assertEqual(restored["state"], "interrupted")
         self.assertEqual(restored["error"]["code"], "agent_restarted")
 
+    def test_interrupted_snapshot_survives_two_consecutive_registry_recreations(self):
+        job, _ = self.registry.submit(self.identity, "scan")
+        self.registry.transition(job["job_id"], "running", "reading_model")
+
+        first_restart = PlanningJobRegistry(
+            self.storage_root,
+            clock=lambda: "2026-08-21T10:01:00+00:00",
+            id_factory=lambda: "job-2",
+        )
+        first_snapshot = first_restart.get(job["job_id"], self.identity)
+        second_restart = PlanningJobRegistry(
+            self.storage_root,
+            clock=lambda: "2026-08-21T10:02:00+00:00",
+            id_factory=lambda: "job-3",
+        )
+        second_snapshot = second_restart.get(job["job_id"], self.identity)
+
+        self.assertEqual(second_snapshot, first_snapshot)
+        self.assertEqual(second_snapshot["state"], "interrupted")
+        self.assertEqual(second_snapshot["error"]["code"], "agent_restarted")
+
+    def test_malformed_and_unsafe_job_files_are_skipped(self):
+        valid_job, _ = self.registry.submit(self.identity, "valid scan")
+        (self.storage_root / "malformed.json").write_text(
+            "{not valid json", encoding="utf-8"
+        )
+        unsafe_record = {
+            "job_id": "unsafe",
+            "state": "completed",
+            "stage": "finished",
+            "created_at": "2026-08-21T10:00:00+00:00",
+            "updated_at": "2026-08-21T10:00:00+00:00",
+            "result": {"raw_model_response": "model-secret"},
+            "error": None,
+            "identity": self.identity,
+            "idempotency_key": "unsafe-key",
+        }
+        (self.storage_root / "unsafe.json").write_text(
+            json.dumps(unsafe_record), encoding="utf-8"
+        )
+
+        restored = PlanningJobRegistry(
+            self.storage_root,
+            clock=lambda: "2026-08-21T10:01:00+00:00",
+            id_factory=lambda: "job-2",
+        )
+
+        self.assertIsNotNone(restored.get(valid_job["job_id"], self.identity))
+        self.assertIsNone(restored.get("unsafe", self.identity))
+
     def test_persisted_json_contains_only_snapshot_and_safe_request_metadata(self):
         job, _ = self.registry.submit(self.identity, "  scan   model ")
         job["result"] = {"tampered": True}
