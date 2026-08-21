@@ -15,9 +15,7 @@ from . import PANEL_ID
 from .client import (
     AgentClient,
     AgentConnectionError,
-    PlanningRequestTimeout,
     ensure_agent_available,
-    planning_timeout_from_environment,
 )
 from .document_status import collect_document_status
 from .process import start_agent_process
@@ -41,7 +39,6 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._client = AgentClient(
             "http://127.0.0.1:{}".format(port),
             timeout_seconds=50,
-            planning_timeout_seconds=planning_timeout_from_environment(),
         )
         self._last_message = None
         self._document_pause_reason = None
@@ -63,7 +60,9 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._data_root = None
         self._pending_session_revoke = None
         self._planning_active = False
-        self._planning_timeout_pending = False
+        self._planning_job_id = None
+        self._planning_job_context = None
+        self._planning_poll_generation = 0
         self._planning_options = []
         self.SendButton.Click += self.send_click
         self.AnalyzeButton.Click += self.analyze_click
@@ -147,13 +146,6 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             self._choose_session("new", None)
 
     def retry_click(self, sender, args):
-        if getattr(self, "_planning_timeout_pending", False):
-            self._set_status(
-                "等待 Agent 完成",
-                "上次付费规划可能仍在运行；本会话已阻止重复提交。",
-            )
-            self.RetryButton.IsEnabled = False
-            return
         if self._last_message:
             if self._planning_active:
                 self._request_plan(self._last_message)
@@ -436,32 +428,43 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             )
 
     def _request_plan(self, message):
-        if getattr(self, "_planning_timeout_pending", False):
-            self._set_status(
-                "等待 Agent 完成",
-                "上次付费规划可能仍在运行；本会话已阻止重复提交。",
-            )
-            self.RetryButton.IsEnabled = False
-            return
         context = self._session_context()
         if context is None:
             self._set_status("等待选择", "请先为当前文档选择继续或新建会话")
             return
+        if (
+            getattr(self, "_planning_job_context", None) == context
+            and getattr(self, "_planning_poll_generation", 0) > 0
+        ):
+            self._set_status(
+                "等待 Agent 完成",
+                "当前规划任务仍在运行；本会话已阻止重复提交。",
+            )
+            self.RetryButton.IsEnabled = False
+            return
         self._planning_active = True
         self._last_message = message
+        self._planning_poll_generation = (
+            getattr(self, "_planning_poll_generation", 0) + 1
+        )
+        poll_generation = self._planning_poll_generation
+        self._planning_job_id = None
+        self._planning_job_context = context
         if hasattr(self, "MessageInput"):
             self.MessageInput.Text = ""
         self.Transcript.AppendText("你：{}\n".format(message))
         self._set_busy(True)
         self._set_plan_options_enabled(False)
         self._set_status("分析中", "AI正在只读扫描模型并比较证据…")
-        self._run_background(lambda: self._plan(message, context))
+        self._run_background(
+            lambda: self._submit_plan_job(message, context, poll_generation)
+        )
 
-    def _plan(self, message, context):
-        if not self._session_is_current(context):
+    def _submit_plan_job(self, message, context, poll_generation):
+        if not self._planning_poll_is_current(context, poll_generation):
             return
         try:
-            result = self._client.create_plan(
+            snapshot = self._client.submit_plan_job(
                 context[1],
                 context[2],
                 context[3],
@@ -470,32 +473,160 @@ class AiAreaAssistantPanel(forms.WPFPanel):
                 context[4],
                 message,
             )
-            if not self._session_is_current(context):
-                return
-            self._dispatch(
-                lambda payload=result, session=context: self._plan_completed(
-                    payload, session
-                )
-            )
-        except PlanningRequestTimeout as exc:
-            text = str(exc)
-            self._dispatch(
-                lambda message=text, session=context: self._planning_timed_out(
-                    message, session
-                )
-            )
         except AgentConnectionError as exc:
             text = str(exc)
             self._dispatch(
-                lambda message=text, session=context: self._reply_failed(
-                    message, True, session
+                lambda message=text, session=context, generation=poll_generation: self._plan_job_submission_failed(
+                    message, session, generation
                 )
             )
+            return
+        if not self._planning_poll_is_current(context, poll_generation):
+            return
+        job_id = snapshot["job_id"]
+        self._planning_job_id = job_id
+        self._dispatch(
+            lambda payload=snapshot, session=context, generation=poll_generation: self._apply_plan_job(
+                payload, session, generation
+            )
+        )
+        if snapshot["state"] in ("queued", "running"):
+            self._poll_plan_job(job_id, context, poll_generation)
+
+    def _poll_plan_job(self, job_id, context, poll_generation):
+        identity = self._plan_job_identity(context)
+        while self._planning_poll_is_current(
+            context, poll_generation, job_id
+        ):
+            try:
+                snapshot = self._client.get_plan_job(job_id, identity)
+            except AgentConnectionError:
+                self._dispatch(
+                    lambda session=context, generation=poll_generation, current_job=job_id: self._planning_poll_connection_failed(
+                        session, generation, current_job
+                    )
+                )
+                if not self._planning_poll_is_current(
+                    context, poll_generation, job_id
+                ):
+                    return
+                threading.Event().wait(1.0)
+                continue
+            if not self._planning_poll_is_current(
+                context, poll_generation, job_id
+            ):
+                return
+            self._dispatch(
+                lambda payload=snapshot, session=context, generation=poll_generation: self._apply_plan_job(
+                    payload, session, generation
+                )
+            )
+            if snapshot["state"] not in ("queued", "running"):
+                return
+            threading.Event().wait(1.0)
+
+    def _apply_plan_job(self, snapshot, context, poll_generation):
+        job_id = snapshot["job_id"]
+        if not self._planning_poll_is_current(
+            context, poll_generation, job_id
+        ):
+            return
+        if snapshot["state"] in ("queued", "running"):
+            self._set_status("分析中", self._planning_stage_text(snapshot["stage"]))
+            return
+        if snapshot["state"] == "completed":
+            self._plan_completed(snapshot["result"], context)
+            self._clear_planning_job(context, poll_generation, job_id)
+            return
+        terminal_messages = {
+            "failed": (
+                "规划失败",
+                (snapshot.get("error") or {}).get(
+                    "message", "Agent 未能完成本次规划。"
+                ),
+            ),
+            "cancelled": ("规划已取消", "本次规划任务已取消。"),
+            "interrupted": (
+                "规划已中断",
+                (snapshot.get("error") or {}).get(
+                    "message", "Agent 重启或会话中断了本次规划。"
+                ),
+            ),
+        }
+        terminal = terminal_messages.get(snapshot["state"])
+        if terminal is None:
+            return
+        title, detail = terminal
+        self.Transcript.AppendText("\n[{}] {}\n\n".format(title, detail))
+        self._set_busy(False)
+        self._set_status(title, detail)
+        self.RetryButton.IsEnabled = True
+        self._clear_planning_job(context, poll_generation, job_id)
+
+    def _planning_poll_connection_failed(
+        self, context, poll_generation, job_id
+    ):
+        if not self._planning_poll_is_current(
+            context, poll_generation, job_id
+        ):
+            return
+        self._set_status(
+            "仍在等待",
+            "仍在等待，本次状态查询失败，正在重新连接…",
+        )
+
+    def _plan_job_submission_failed(self, message, context, poll_generation):
+        if not self._planning_poll_is_current(context, poll_generation):
+            return
+        self._planning_job_id = None
+        self._planning_job_context = None
+        self._reply_failed(message, True, context)
+
+    def _planning_poll_is_current(
+        self, context, poll_generation, job_id=None
+    ):
+        if (
+            not self._session_is_current(context)
+            or poll_generation != getattr(self, "_planning_poll_generation", 0)
+            or context != getattr(self, "_planning_job_context", None)
+        ):
+            return False
+        return job_id is None or job_id == getattr(self, "_planning_job_id", None)
+
+    def _clear_planning_job(self, context, poll_generation, job_id):
+        if not self._planning_poll_is_current(
+            context, poll_generation, job_id
+        ):
+            return
+        self._planning_job_id = None
+        self._planning_job_context = None
+
+    def _plan_job_identity(self, context):
+        return {
+            "project_directory": context[1],
+            "document_fingerprint": context[2],
+            "context_id": context[3],
+            "panel_instance_id": self._panel_instance_id,
+            "generation": context[0],
+            "session_id": context[4],
+        }
+
+    @staticmethod
+    def _planning_stage_text(stage):
+        return {
+            "accepted": "规划任务已接收，正在排队…",
+            "validating_context": "正在验证当前文档与会话…",
+            "reading_model": "正在只读读取 Revit 模型…",
+            "capturing_evidence": "正在采集模型证据…",
+            "requesting_model": "正在请求 AI 模型分析…",
+            "validating_result": "正在校验规划结果…",
+            "persisting_result": "正在保存规划结果…",
+            "finished": "规划任务已结束。",
+        }.get(stage, "规划任务正在进行…")
 
     def _plan_completed(self, result, context):
         if not self._session_is_current(context):
             return
-        self._planning_timeout_pending = False
         self._planning_options = result["options"]
         self.StructuredSummary.Text = result["summary"]
         self.StructuredQuestion.Text = result["question"]
@@ -526,19 +657,6 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self.Transcript.AppendText("\n")
         self._set_busy(False)
         self._set_status("等待选择", "可点击方案，或在输入框自由说明项目意图")
-
-    def _planning_timed_out(self, message, context):
-        if not self._session_is_current(context):
-            return
-        self._planning_timeout_pending = True
-        self.Transcript.AppendText("\n[错误] {}\n\n".format(message))
-        self._set_busy(False)
-        self.SendButton.IsEnabled = False
-        self.AnalyzeButton.IsEnabled = False
-        if hasattr(self, "AnalyzeSelectionButton"):
-            self.AnalyzeSelectionButton.IsEnabled = False
-        self.RetryButton.IsEnabled = False
-        self._set_status("等待 Agent 完成", message)
 
     def _select_plan_option(self, index):
         if index >= len(self._planning_options):
@@ -722,7 +840,6 @@ class AiAreaAssistantPanel(forms.WPFPanel):
             or expected_context[2] != self._session_document_fingerprint
         ):
             return
-        self._planning_timeout_pending = False
         self._session_id = result.get("active_session_id")
         self._session_context_id = result.get("context_id")
         self._data_root = result.get("data_root") or self._data_root
@@ -736,6 +853,8 @@ class AiAreaAssistantPanel(forms.WPFPanel):
     def _pause_session_for_document_change(self, after_revoke=None):
         next_version = self._session_request_version + 1
         context_id = self._session_context_id
+        planning_job_id = getattr(self, "_planning_job_id", None)
+        planning_job_context = getattr(self, "_planning_job_context", None)
         self._session_request_version = next_version
         self._session_id = None
         self._session_context_id = None
@@ -744,7 +863,11 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self._session_document_fingerprint = None
         self._data_root = None
         self._planning_active = False
-        self._planning_timeout_pending = False
+        self._planning_poll_generation = (
+            getattr(self, "_planning_poll_generation", 0) + 1
+        )
+        self._planning_job_id = None
+        self._planning_job_context = None
         self._planning_options = []
         if hasattr(self, "StructuredSummary"):
             self.StructuredSummary.Text = "文档已切换；旧方案已清除。"
@@ -756,6 +879,8 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         self.ContinueSessionButton.IsEnabled = False
         self.NewSessionButton.IsEnabled = False
         self._set_session_status("文档已切换；旧会话已暂停，正在读取新文档")
+        if planning_job_id is not None and planning_job_context is not None:
+            self._cancel_plan_job(planning_job_id, planning_job_context)
         if context_id is not None:
             if after_revoke is None:
                 self._revoke_session(next_version, context_id)
@@ -772,6 +897,16 @@ class AiAreaAssistantPanel(forms.WPFPanel):
                 )
         elif after_revoke is not None:
             after_revoke()
+
+    def _cancel_plan_job(self, job_id, context):
+        try:
+            self._client.cancel_plan_job(
+                job_id, self._plan_job_identity(context)
+            )
+        except AgentConnectionError:
+            # Session revocation remains the authoritative safety fence when
+            # this short best-effort cancellation request cannot connect.
+            pass
 
     def _revoke_then_continue(self, generation, context_id, callback):
         if not self._revoke_session(generation, context_id):

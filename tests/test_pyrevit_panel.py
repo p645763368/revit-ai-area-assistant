@@ -61,34 +61,160 @@ class _SessionClient:
         self.calls.append(("revoke", panel_instance_id, generation, context_id))
         return {"revoked": True}
 
+    def cancel_plan_job(self, job_id, identity):
+        self.calls.append(("cancel", job_id, identity))
+        return _plan_job_snapshot("cancelled", "finished")
+
 
 class _PlanClient(_SessionClient):
-    def create_plan(
+    def submit_plan_job(
         self, project, fingerprint, context, panel, generation, session, message
     ):
-        self.calls.append(("plan", fingerprint, session, message))
-        return {
+        self.calls.append(("submit", fingerprint, session, message))
+        return _plan_job_snapshot("queued", "accepted")
+
+    def get_plan_job(self, job_id, identity):
+        return _plan_job_snapshot("completed", "finished", result={
             "summary": "已比较候选来源。",
             "question": "采用哪个来源？",
             "options": [
                 {"id": "floor", "label": "楼板", "recommended": True, "rationale": "轮廓完整", "impact": "继续精确核对"},
                 {"id": "wall", "label": "墙体", "recommended": False, "rationale": "可交叉验证", "impact": "检查墙连接"},
             ],
-        }
+        })
 
 
-class _TimeoutPlanClient(_SessionClient):
+class _RecoverablePlanJobClient(_SessionClient):
     def __init__(self, error_type):
         super().__init__()
         self.error_type = error_type
+        self.submit_count = 0
+        self.poll_count = 0
+        self.polled_job_ids = []
 
-    def create_plan(
+    def submit_plan_job(
         self, project, fingerprint, context, panel, generation, session, message
     ):
-        self.calls.append(("plan", fingerprint, session, message))
-        raise self.error_type(
-            "规划请求等待超时；任务可能仍在本地 Agent 中运行。"
-            "为避免重复计费，请勿立即重试同一规划。"
+        self.submit_count += 1
+        return _plan_job_snapshot("queued", "accepted")
+
+    def get_plan_job(self, job_id, identity):
+        self.poll_count += 1
+        self.polled_job_ids.append(job_id)
+        if self.poll_count == 1:
+            raise self.error_type("temporary connection loss")
+        if self.poll_count == 2:
+            return _plan_job_snapshot("running", "requesting_model")
+        return _plan_job_snapshot("completed", "finished", result=_plan_result())
+
+
+def _plan_result():
+    return {
+        "summary": "已比较候选来源。",
+        "question": "采用哪个来源？",
+        "options": [
+            {
+                "id": "floor",
+                "label": "推荐方案",
+                "recommended": True,
+                "rationale": "轮廓完整",
+                "impact": "继续精确核对",
+            },
+            {
+                "id": "wall",
+                "label": "墙体",
+                "recommended": False,
+                "rationale": "可交叉验证",
+                "impact": "检查墙连接",
+            },
+        ],
+    }
+
+
+def _plan_job_snapshot(state, stage, result=None, error=None):
+    return {
+        "job_id": "job-1",
+        "state": state,
+        "stage": stage,
+        "created_at": "2026-08-21T00:00:00+00:00",
+        "updated_at": "2026-08-21T00:00:01+00:00",
+        "result": result,
+        "error": error,
+    }
+
+
+class _ImmediateWait:
+    def wait(self, timeout):
+        return False
+
+
+class _BlockingPlanJobClient(_SessionClient):
+    def __init__(self):
+        super().__init__()
+        self.submit_count = 0
+        self.poll_started = threading.Event()
+        self.release_poll = threading.Event()
+
+    def submit_plan_job(self, *args):
+        self.submit_count += 1
+        return _plan_job_snapshot("running", "reading_model")
+
+    def get_plan_job(self, job_id, identity):
+        self.poll_started.set()
+        self.release_poll.wait(2)
+        return _plan_job_snapshot("completed", "finished", result=_plan_result())
+
+
+class _ExistingPlanJobClient(_SessionClient):
+    def __init__(self):
+        super().__init__()
+        self.submit_count = 0
+        self.poll_count = 0
+
+    def submit_plan_job(self, *args):
+        self.submit_count += 1
+        raise AssertionError("existing job must not be submitted again")
+
+    def get_plan_job(self, job_id, identity):
+        self.poll_count += 1
+        return _plan_job_snapshot("completed", "finished", result=_plan_result())
+
+
+class _AlternatingStageClient(_SessionClient):
+    def __init__(self):
+        super().__init__()
+        self.snapshots = [
+            _plan_job_snapshot("running", "capturing_evidence"),
+            _plan_job_snapshot("running", "reading_model"),
+            _plan_job_snapshot("running", "capturing_evidence"),
+            _plan_job_snapshot("completed", "finished", result=_plan_result()),
+        ]
+
+    def submit_plan_job(self, *args):
+        return _plan_job_snapshot("queued", "accepted")
+
+    def get_plan_job(self, job_id, identity):
+        return self.snapshots.pop(0)
+
+
+class _InterruptedPlanJobClient(_SessionClient):
+    def __init__(self):
+        super().__init__()
+        self.submit_count = 0
+
+    def submit_plan_job(self, *args):
+        self.submit_count += 1
+        return _plan_job_snapshot("queued", "accepted")
+
+    def get_plan_job(self, job_id, identity):
+        return _plan_job_snapshot(
+            "interrupted",
+            "finished",
+            error={
+                "code": "agent_restarted",
+                "message": "Agent restarted before completion.",
+                "retryable": True,
+            },
         )
 
 
@@ -231,13 +357,44 @@ def _load_panel_module():
         return importlib.import_module("area_assistant_pyrevit.panel")
 
 
+def _make_planning_panel(panel_module, client):
+    panel = panel_module.AiAreaAssistantPanel.__new__(
+        panel_module.AiAreaAssistantPanel
+    )
+    panel._client = client
+    panel._dispatch = lambda callback: callback()
+    panel._run_background = lambda callback: callback()
+    panel._session_request_version = 1
+    panel._panel_instance_id = "panel-a"
+    panel._session_project_directory = "C:\\test"
+    panel._session_document_fingerprint = "document-a"
+    panel._session_context_id = "context-a"
+    panel._session_id = "session-a"
+    panel._planning_active = True
+    panel._planning_job_id = None
+    panel._planning_job_context = None
+    panel._planning_poll_generation = 0
+    panel._planning_options = []
+    panel._last_message = None
+    panel._selected_elements = []
+    for name in (
+        "Transcript", "MessageInput", "SendButton", "RetryButton", "AnalyzeButton",
+        "AnalyzeSelectionButton", "ConnectionState", "ConnectionDetail",
+        "StructuredSummary", "StructuredQuestion", "Option1Button",
+        "Option2Button", "Option3Button", "Option4Button", "ContinueSessionButton",
+        "NewSessionButton", "SessionState",
+    ):
+        setattr(panel, name, _Control())
+    return panel
+
+
 class PyRevitPanelTests(unittest.TestCase):
-    def test_planning_timeout_blocks_immediate_duplicate_paid_request(self):
+    def test_plan_poll_recovers_without_duplicate_paid_submission(self):
         panel_module = _load_panel_module()
         panel = panel_module.AiAreaAssistantPanel.__new__(
             panel_module.AiAreaAssistantPanel
         )
-        panel._client = _TimeoutPlanClient(panel_module.PlanningRequestTimeout)
+        panel._client = _RecoverablePlanJobClient(panel_module.AgentConnectionError)
         panel._dispatch = lambda callback: callback()
         panel._run_background = lambda callback: callback()
         panel._session_request_version = 1
@@ -247,25 +404,190 @@ class PyRevitPanelTests(unittest.TestCase):
         panel._session_context_id = "context-a"
         panel._session_id = "session-a"
         panel._planning_active = True
-        panel._planning_timeout_pending = False
+        panel._planning_job_id = None
+        panel._planning_job_context = None
+        panel._planning_poll_generation = 0
         panel._planning_options = []
         panel._last_message = None
+        observed_details = []
         for name in (
             "Transcript", "SendButton", "RetryButton", "AnalyzeButton",
             "AnalyzeSelectionButton", "ConnectionState", "ConnectionDetail",
+            "StructuredSummary", "StructuredQuestion", "Option1Button",
+            "Option2Button", "Option3Button", "Option4Button",
         ):
             setattr(panel, name, _Control())
+        original_set_status = panel._set_status
+
+        def record_status(state, detail):
+            observed_details.append(detail)
+            original_set_status(state, detail)
+
+        panel._set_status = record_status
+
+        with patch.object(panel_module.threading, "Event", _ImmediateWait):
+            panel._request_plan("扫描当前模型")
+
+        self.assertEqual(panel._client.submit_count, 1)
+        self.assertEqual(panel._client.poll_count, 3)
+        self.assertEqual(panel._client.polled_job_ids, ["job-1"] * 3)
+        self.assertIn(
+            "仍在等待，本次状态查询失败，正在重新连接…",
+            observed_details,
+        )
+        self.assertIn("推荐方案", panel.Option1Button.Content)
+        self.assertIn("依据：轮廓完整", panel.Transcript.Text)
+
+    def test_repeated_click_while_polling_submits_only_once(self):
+        panel_module = _load_panel_module()
+        client = _BlockingPlanJobClient()
+        panel = _make_planning_panel(panel_module, client)
+        threads = []
+
+        def run_background(callback):
+            worker = threading.Thread(target=callback)
+            worker.start()
+            threads.append(worker)
+
+        panel._run_background = run_background
 
         panel._request_plan("扫描当前模型")
-        panel.retry_click(None, None)
+        self.assertTrue(client.poll_started.wait(1))
+        self.assertEqual(panel._planning_job_id, "job-1")
         panel._request_plan("扫描当前模型")
+        client.release_poll.set()
+        threads[0].join(2)
 
-        plan_calls = [call for call in panel._client.calls if call[0] == "plan"]
-        self.assertEqual(len(plan_calls), 1)
-        self.assertTrue(panel._planning_timeout_pending)
-        self.assertFalse(panel.RetryButton.IsEnabled)
-        self.assertFalse(panel.SendButton.IsEnabled)
-        self.assertIn("可能仍在运行", panel.ConnectionDetail.Text)
+        self.assertFalse(threads[0].is_alive())
+        self.assertEqual(client.submit_count, 1)
+        self.assertIn("推荐方案", panel.Option1Button.Content)
+
+    def test_document_switch_discards_late_plan_completion_and_job_state(self):
+        panel_module = _load_panel_module()
+        panel = _make_planning_panel(panel_module, _SessionClient())
+        context = panel._session_context()
+        panel._planning_job_id = "job-1"
+        panel._planning_job_context = context
+        panel._planning_poll_generation = 7
+
+        panel._pause_session_for_document_change()
+        switched_summary = panel.StructuredSummary.Text
+        panel._apply_plan_job(
+            _plan_job_snapshot("completed", "finished", result=_plan_result()),
+            context,
+            7,
+        )
+
+        self.assertEqual(panel.StructuredSummary.Text, switched_summary)
+        self.assertNotIn("已比较候选来源", panel.Transcript.Text)
+        self.assertIsNone(panel._planning_job_id)
+        self.assertIsNone(panel._planning_job_context)
+        self.assertEqual(panel._planning_poll_generation, 8)
+        self.assertEqual(
+            [call[0] for call in panel._client.calls],
+            ["cancel", "revoke"],
+        )
+        self.assertEqual(panel._client.calls[0][1], "job-1")
+
+    def test_reopened_panel_polling_existing_job_does_not_resubmit(self):
+        panel_module = _load_panel_module()
+        client = _ExistingPlanJobClient()
+        panel = _make_planning_panel(panel_module, client)
+        context = panel._session_context()
+        panel._planning_job_id = "job-1"
+        panel._planning_job_context = context
+        panel._planning_poll_generation = 4
+
+        # Reopening the dockable pane recreates its visible controls while the
+        # panel instance retains the active session and job identity.
+        panel.StructuredSummary = _Control()
+        panel.Option1Button = _Control()
+        panel.Option2Button = _Control()
+        panel.Option3Button = _Control()
+        panel.Option4Button = _Control()
+        panel._poll_plan_job("job-1", context, 4)
+
+        self.assertEqual(client.submit_count, 0)
+        self.assertEqual(client.poll_count, 1)
+        self.assertIn("推荐方案", panel.Option1Button.Content)
+
+    def test_current_stage_text_allows_real_activity_to_alternate(self):
+        panel_module = _load_panel_module()
+        panel = _make_planning_panel(panel_module, _AlternatingStageClient())
+        details = []
+        original_set_status = panel._set_status
+
+        def record_status(state, detail):
+            details.append(detail)
+            original_set_status(state, detail)
+
+        panel._set_status = record_status
+        with patch.object(panel_module.threading, "Event", _ImmediateWait):
+            panel._request_plan("扫描当前模型")
+
+        capture_text = "正在采集模型证据…"
+        read_text = "正在只读读取 Revit 模型…"
+        activity_details = [
+            detail for detail in details if detail in (capture_text, read_text)
+        ]
+        self.assertEqual(
+            activity_details,
+            [capture_text, read_text, capture_text],
+        )
+
+    def test_terminal_plan_states_are_distinct_and_enable_explicit_retry(self):
+        panel_module = _load_panel_module()
+        cases = (
+            (
+                "failed",
+                {
+                    "code": "model_error",
+                    "message": "Model request failed.",
+                    "retryable": True,
+                },
+                "规划失败",
+            ),
+            ("cancelled", None, "规划已取消"),
+            (
+                "interrupted",
+                {
+                    "code": "agent_restarted",
+                    "message": "Agent restarted before completion.",
+                    "retryable": True,
+                },
+                "规划已中断",
+            ),
+        )
+        for state, error, expected_state in cases:
+            with self.subTest(state=state):
+                panel = _make_planning_panel(panel_module, _SessionClient())
+                context = panel._session_context()
+                panel._planning_job_id = "job-1"
+                panel._planning_job_context = context
+                panel._planning_poll_generation = 2
+
+                panel._apply_plan_job(
+                    _plan_job_snapshot(state, "finished", error=error),
+                    context,
+                    2,
+                )
+
+                self.assertEqual(panel.ConnectionState.Text, expected_state)
+                self.assertTrue(panel.RetryButton.IsEnabled)
+                self.assertIsNone(panel._planning_job_id)
+                self.assertIsNone(panel._planning_job_context)
+
+    def test_interrupted_job_waits_for_explicit_retry_before_resubmitting(self):
+        panel_module = _load_panel_module()
+        client = _InterruptedPlanJobClient()
+        panel = _make_planning_panel(panel_module, client)
+        with patch.object(panel_module.threading, "Event", _ImmediateWait):
+            panel._request_plan("扫描当前模型")
+            self.assertEqual(client.submit_count, 1)
+            self.assertTrue(panel.RetryButton.IsEnabled)
+            panel.retry_click(None, None)
+
+        self.assertEqual(client.submit_count, 2)
 
     def test_clickable_recommendation_continues_planning_in_current_session(self):
         panel_module = _load_panel_module()
@@ -280,6 +602,9 @@ class PyRevitPanelTests(unittest.TestCase):
         panel._session_context_id = "context-a"
         panel._session_id = "session-a"
         panel._planning_active = True
+        panel._planning_job_id = None
+        panel._planning_job_context = None
+        panel._planning_poll_generation = 0
         panel._planning_options = []
         for name in (
             "Transcript", "SendButton", "RetryButton", "AnalyzeButton",
@@ -289,13 +614,14 @@ class PyRevitPanelTests(unittest.TestCase):
         ):
             setattr(panel, name, _Control())
 
-        panel._request_plan("扫描当前模型")
-        panel.option_1_click(None, None)
+        with patch.object(panel_module.threading, "Event", _ImmediateWait):
+            panel._request_plan("扫描当前模型")
+            panel.option_1_click(None, None)
 
         self.assertEqual(panel.StructuredQuestion.Text, "采用哪个来源？")
         self.assertIn("★ 楼板", panel.Option1Button.Content)
         self.assertEqual(
-            [call[3] for call in panel._client.calls if call[0] == "plan"],
+            [call[3] for call in panel._client.calls if call[0] == "submit"],
             ["扫描当前模型", "选择方案：楼板（floor）"],
         )
         self.assertIn("依据：轮廓完整", panel.Transcript.Text)
