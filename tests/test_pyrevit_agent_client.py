@@ -494,6 +494,34 @@ class PyRevitAgentClientTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentConnectionError, "Planning job was not found"):
             self.client.get_plan_job("job-a", identity)
 
+    def test_plan_job_transport_error_hides_private_exception_text_without_retry(self):
+        identity = {
+            "project_directory": "C:\\test",
+            "document_fingerprint": "document-a",
+            "context_id": "context-a",
+            "panel_instance_id": "panel-a",
+            "generation": 1,
+            "session_id": "session-a",
+        }
+        private_marker = "cedar-private-diagnostic-721"
+        requests = []
+
+        def fail_poll(request, timeout):
+            requests.append((request.full_url, timeout))
+            raise OSError(private_marker)
+
+        with patch("area_assistant_pyrevit.client.urlopen", side_effect=fail_poll):
+            with self.assertRaises(AgentConnectionError) as raised:
+                self.client.get_plan_job("job-a", identity)
+
+        self.assertEqual(
+            str(raised.exception),
+            "Planning job transport is unavailable. Check the local Agent connection.",
+        )
+        self.assertNotIn(private_marker, str(raised.exception))
+        self.assertEqual(len(requests), 1)
+        self.assertTrue(requests[0][0].startswith(self.client.base_url + "/v1/plan-jobs/job-a?"))
+
     def test_plan_job_poll_timeout_raises_connection_error_without_hidden_retry(self):
         identity = {
             "project_directory": "C:\\test",

@@ -575,9 +575,9 @@ class AgentClient:
             raise
         except HTTPError as exc:
             raise AgentConnectionError(_agent_http_error_message(exc, request_id))
-        except (OSError, TypeError, ValueError, URLError) as exc:
+        except (OSError, TypeError, ValueError, URLError):
             raise AgentConnectionError(
-                "Local Agent planning job request failed: {}".format(exc)
+                "Planning job transport is unavailable. Check the local Agent connection."
             )
 
     @staticmethod
