@@ -124,6 +124,27 @@ class PlanningJobRegistryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.registry.transition(job["job_id"], "queued", "accepted")
 
+    def test_transition_rejects_stage_that_is_invalid_for_the_new_state(self):
+        job, _ = self.registry.submit(self.identity, "scan")
+
+        with self.assertRaises(ValueError):
+            self.registry.transition(job["job_id"], "running", "accepted")
+
+        self.assertEqual(
+            self.registry.get(job["job_id"], self.identity)["state"], "queued"
+        )
+
+    def test_registry_skips_record_with_invalid_public_timestamp(self):
+        job, _ = self.registry.submit(self.identity, "scan")
+        path = self.storage_root / (job["job_id"] + ".json")
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["updated_at"] = "not-a-date-time"
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+        restored = PlanningJobRegistry(self.storage_root)
+
+        self.assertIsNone(restored.get(job["job_id"], self.identity))
+
     def test_get_and_cancel_hide_jobs_from_a_different_identity(self):
         job, _ = self.registry.submit(self.identity, "scan")
         other_identity = dict(self.identity, context_id="context-b")

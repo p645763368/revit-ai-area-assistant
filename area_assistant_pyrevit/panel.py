@@ -533,7 +533,7 @@ class AiAreaAssistantPanel(forms.WPFPanel):
         ):
             try:
                 snapshot = self._client.get_plan_job(job_id, identity)
-            except AgentConnectionError:
+            except PlanJobTransportError:
                 self._dispatch(
                     lambda session=context, generation=poll_generation, current_job=job_id: self._planning_poll_connection_failed(
                         session, generation, current_job
@@ -545,6 +545,14 @@ class AiAreaAssistantPanel(forms.WPFPanel):
                     return
                 threading.Event().wait(1.0)
                 continue
+            except AgentConnectionError as exc:
+                error_message = str(exc)
+                self._dispatch(
+                    lambda text=error_message, session=context, generation=poll_generation: self._planning_submit_failed(
+                        text, session, generation
+                    )
+                )
+                return
             if not self._planning_poll_is_current(
                 context, poll_generation, job_id
             ):

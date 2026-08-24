@@ -573,6 +573,41 @@ class PyRevitPanelTests(unittest.TestCase):
             "仍在等待，本次状态查询失败，正在重新连接…",
         )
 
+    def test_definitive_poll_error_stops_observing_the_job(self):
+        panel_module = _load_panel_module()
+
+        class DefinitivePollClient:
+            def __init__(self):
+                self.poll_count = 0
+
+            def get_plan_job(self, job_id, identity):
+                self.poll_count += 1
+                raise panel_module.AgentConnectionError("Planning job was not found.")
+
+        client = DefinitivePollClient()
+        panel = _make_planning_panel(panel_module, client)
+        context = panel._session_context()
+        panel._planning_job_id = "job-1"
+        panel._planning_job_context = context
+        panel._planning_poll_generation = 4
+        panel._dispatch = lambda callback: callback()
+
+        def stop_if_code_retries(timeout):
+            panel._planning_poll_generation += 1
+
+        with patch.object(
+            panel_module.threading,
+            "Event",
+            lambda: _CallbackWait(stop_if_code_retries),
+        ):
+            panel._poll_plan_job("job-1", context, 4)
+
+        self.assertEqual(client.poll_count, 1)
+        self.assertEqual(panel.ConnectionState.Text, "请求失败")
+        self.assertEqual(panel.ConnectionDetail.Text, "Planning job was not found.")
+        self.assertIsNone(panel._planning_job_id)
+        self.assertIsNone(panel._planning_job_context)
+
     def test_ambiguous_submit_retries_identically_without_enabling_distinct_submit(self):
         panel_module = _load_panel_module()
         client = _AmbiguousSubmitClient(panel_module.PlanJobTransportError)
@@ -633,7 +668,7 @@ class PyRevitPanelTests(unittest.TestCase):
         panel = panel_module.AiAreaAssistantPanel.__new__(
             panel_module.AiAreaAssistantPanel
         )
-        panel._client = _RecoverablePlanJobClient(panel_module.AgentConnectionError)
+        panel._client = _RecoverablePlanJobClient(panel_module.PlanJobTransportError)
         panel._dispatch = lambda callback: callback()
         panel._run_background = lambda callback: callback()
         panel._session_request_version = 1

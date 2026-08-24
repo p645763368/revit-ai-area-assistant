@@ -141,7 +141,7 @@ def _registry_for(server, session_directory):
         return registry
 
 
-def _execute_plan(server, request, job_guard=None, progress=None):
+def _execute_plan(server, request, job_guard=None, progress=None, started=None):
     """Execute one lock-owned plan without retaining an HTTP handler."""
     repository = SessionRepository(Path(request["project_directory"]))
     document_fingerprint = request["document_fingerprint"]
@@ -149,6 +149,7 @@ def _execute_plan(server, request, job_guard=None, progress=None):
     message = request["message"]
     job_guard = job_guard or (lambda: True)
     progress = progress or (lambda stage: None)
+    started = started or (lambda: None)
 
     def require_planning_context_locked():
         _require_active_planning_context_locked(
@@ -156,6 +157,7 @@ def _execute_plan(server, request, job_guard=None, progress=None):
         )
 
     with server.planning_lock:
+        started()
         with server.session_lock:
             require_planning_context_locked()
             repository.record_message(
@@ -231,18 +233,23 @@ def _run_plan_job(server, registry, job_id, request, identity):
     try:
         if not registry.is_active(job_id):
             raise CancelledPlanningJob("planning job is no longer active")
-        registry.transition(job_id, "running", "validating_context")
 
         def update_stage(stage):
             if not registry.is_active(job_id):
                 raise CancelledPlanningJob("planning job is no longer active")
             registry.transition(job_id, "running", stage)
 
+        def mark_started():
+            if not registry.is_active(job_id):
+                raise CancelledPlanningJob("planning job is no longer active")
+            registry.transition(job_id, "running", "validating_context")
+
         payload = _execute_plan(
             server,
             request,
             job_guard=lambda: registry.is_active(job_id),
             progress=update_stage,
+            started=mark_started,
         )
         repository = SessionRepository(Path(request["project_directory"]))
         with server.session_lock:

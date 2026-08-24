@@ -33,6 +33,21 @@ PUBLIC_SNAPSHOT_FIELDS = (
 NON_TERMINAL_STATES = {"queued", "running"}
 TERMINAL_STATES = {"completed", "failed", "cancelled", "interrupted"}
 VALID_STATES = NON_TERMINAL_STATES | TERMINAL_STATES
+VALID_STAGES_BY_STATE = {
+    "queued": {"accepted"},
+    "running": {
+        "validating_context",
+        "reading_model",
+        "capturing_evidence",
+        "requesting_model",
+        "validating_result",
+        "persisting_result",
+    },
+    "completed": {"finished"},
+    "failed": {"finished"},
+    "cancelled": {"finished"},
+    "interrupted": {"finished"},
+}
 ALLOWED_TRANSITIONS = {
     "queued": {"running", "cancelled"},
     "running": {"running", "completed", "failed", "cancelled"},
@@ -148,6 +163,7 @@ class PlanningJobRegistry:
             candidate["result"], candidate["error"] = self._safe_payload(
                 state, result, error
             )
+            self._validate_public_snapshot(candidate)
             self._write_record(candidate)
             self._jobs[job_id] = candidate
             return self._snapshot(candidate)
@@ -288,6 +304,7 @@ class PlanningJobRegistry:
             raise ValueError("stored planning job has an invalid id")
         if record["state"] not in VALID_STATES:
             raise ValueError("stored planning job has an invalid state")
+        self._validate_public_snapshot(record)
         if not isinstance(record["identity"], dict):
             raise ValueError("stored planning job has an invalid identity")
         if self._normalize_identity(record["identity"]) != record["identity"]:
@@ -388,10 +405,34 @@ class PlanningJobRegistry:
     def _timestamp(self) -> str:
         value = self._clock()
         if isinstance(value, datetime):
-            return value.isoformat()
+            value = value.isoformat()
         if not isinstance(value, str):
             raise TypeError("clock must return a timestamp string or datetime")
+        self._validate_timestamp(value)
         return value
+
+    @staticmethod
+    def _validate_public_snapshot(record: Dict[str, Any]) -> None:
+        state = record.get("state")
+        if state not in VALID_STAGES_BY_STATE:
+            raise ValueError("planning job has an invalid state")
+        if record.get("stage") not in VALID_STAGES_BY_STATE[state]:
+            raise ValueError("planning job has an invalid state/stage combination")
+        PlanningJobRegistry._validate_timestamp(record.get("created_at"))
+        PlanningJobRegistry._validate_timestamp(record.get("updated_at"))
+
+    @staticmethod
+    def _validate_timestamp(value: Any) -> None:
+        if not isinstance(value, str) or not value:
+            raise ValueError("planning job has an invalid timestamp")
+        normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+        try:
+            parsed = datetime.fromisoformat(normalized)
+            offset = parsed.utcoffset()
+        except (TypeError, ValueError):
+            raise ValueError("planning job has an invalid timestamp")
+        if parsed.tzinfo is None or offset is None:
+            raise ValueError("planning job has an invalid timestamp")
 
     @staticmethod
     def _normalize_identity(identity: Dict[str, Any]) -> Dict[str, Any]:

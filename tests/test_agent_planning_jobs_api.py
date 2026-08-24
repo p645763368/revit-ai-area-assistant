@@ -152,6 +152,25 @@ class AgentPlanningJobsApiTests(unittest.TestCase):
             self._wait_for_terminal(submitted["job_id"])["state"], "completed"
         )
 
+    def test_job_waiting_for_the_single_planner_lock_remains_queued(self):
+        started = threading.Event()
+        release = threading.Event()
+        self.server.planning_agent = _BlockingPlanner(started, release)
+
+        first = self._submit_plan_job("first scan")
+        self.assertTrue(started.wait(1))
+        second = self._submit_plan_job("second scan")
+
+        try:
+            self.assertEqual(self._get_plan_job(first["job_id"])["state"], "running")
+            self.assertEqual(self._get_plan_job(second["job_id"])["state"], "queued")
+            self.assertEqual(self._get_plan_job(second["job_id"])["stage"], "accepted")
+        finally:
+            release.set()
+
+        self.assertEqual(self._wait_for_terminal(first["job_id"])["state"], "completed")
+        self.assertEqual(self._wait_for_terminal(second["job_id"])["state"], "completed")
+
     def test_cancel_is_idempotent_and_blocks_late_durable_commits(self):
         started = threading.Event()
         release = threading.Event()
