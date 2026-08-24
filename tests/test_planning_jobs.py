@@ -156,6 +156,18 @@ class PlanningJobRegistryTests(unittest.TestCase):
 
         self.assertIsNone(restored.get(job["job_id"], self.identity))
 
+    def test_registry_accepts_rfc3339_lowercase_time_designators(self):
+        job, _ = self.registry.submit(self.identity, "scan")
+        path = self.storage_root / (job["job_id"] + ".json")
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["created_at"] = "2026-08-21t10:00:00z"
+        record["updated_at"] = "2026-08-21t10:00:01z"
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+        restored = PlanningJobRegistry(self.storage_root)
+
+        self.assertIsNotNone(restored.get(job["job_id"], self.identity))
+
     def test_transition_does_not_publish_a_timestamp_earlier_than_previous_state(self):
         job, _ = self.registry.submit(self.identity, "scan")
         self.registry._clock = lambda: "2026-08-21T09:59:59+00:00"

@@ -58,7 +58,8 @@ LEGACY_CONFLICT_ERROR_MESSAGE = (
     "Conflicting legacy planning jobs were interrupted safely."
 )
 RFC3339_TIMESTAMP = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$",
+    re.IGNORECASE,
 )
 
 
@@ -444,7 +445,9 @@ class PlanningJobRegistry:
             raise ValueError("planning job has an invalid timestamp")
         if RFC3339_TIMESTAMP.match(value) is None:
             raise ValueError("planning job has an invalid timestamp")
-        normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+        normalized = value.replace("t", "T", 1)
+        if normalized.endswith(("Z", "z")):
+            normalized = normalized[:-1] + "+00:00"
         try:
             parsed = datetime.fromisoformat(normalized)
             offset = parsed.utcoffset()
