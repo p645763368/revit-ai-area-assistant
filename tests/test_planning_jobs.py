@@ -152,6 +152,7 @@ class PlanningJobRegistryTests(unittest.TestCase):
         ).get(job["job_id"], self.identity)
 
         self.assertEqual(restored["state"], "interrupted")
+        self.assertEqual(restored["stage"], "finished")
         self.assertEqual(restored["error"]["code"], "agent_restarted")
 
     def test_interrupted_snapshot_survives_two_consecutive_registry_recreations(self):

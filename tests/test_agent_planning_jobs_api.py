@@ -9,11 +9,18 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
+
 import area_assistant_agent.server as server_module
 from area_assistant_agent.config import AgentConfig
 from area_assistant_agent.planning import PlanningResult
 from area_assistant_agent.planning_jobs import PlanningJobRegistry
 from area_assistant_agent.server import create_server
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CONTRACTS = ROOT / "contracts" / "v1"
 
 
 class _BlockingPlanner:
@@ -430,10 +437,13 @@ class AgentPlanningJobsApiTests(unittest.TestCase):
         registry.transition(job["job_id"], "running", "reading_model")
         self._restart_server_without_session()
 
-        recovered = self._get_plan_job(job["job_id"])
+        envelope = self._get_plan_job_envelope(job["job_id"])
+        recovered = envelope["payload"]
 
         self.assertEqual(recovered["state"], "interrupted")
+        self.assertEqual(recovered["stage"], "finished")
         self.assertEqual(recovered["error"]["code"], "agent_restarted")
+        self._planning_job_status_validator().validate(envelope)
         self.assertEqual(
             list(self.server.planning_job_registries), [str(session_directory)]
         )
@@ -480,6 +490,9 @@ class AgentPlanningJobsApiTests(unittest.TestCase):
         self.fail("planning job did not reach a terminal state")
 
     def _get_plan_job(self, job_id, identity=None):
+        return self._get_plan_job_envelope(job_id, identity)["payload"]
+
+    def _get_plan_job_envelope(self, job_id, identity=None):
         query = urlencode(identity or self.identity)
         request = Request(
             "http://127.0.0.1:{}/v1/plan-jobs/{}?{}".format(
@@ -488,8 +501,23 @@ class AgentPlanningJobsApiTests(unittest.TestCase):
             method="GET",
         )
         with urlopen(request, timeout=2) as response:
-            envelope = json.loads(response.read().decode("utf-8"))
-        return envelope["payload"]
+            return json.loads(response.read().decode("utf-8"))
+
+    @staticmethod
+    def _planning_job_status_validator():
+        registry = Registry()
+        response_schema = json.loads(
+            (CONTRACTS / "response.schema.json").read_text(encoding="utf-8")
+        )
+        registry = registry.with_resource(
+            response_schema["$id"], Resource.from_contents(response_schema)
+        )
+        status_schema = json.loads(
+            (
+                CONTRACTS / "actions" / "planning-job-status.schema.json"
+            ).read_text(encoding="utf-8")
+        )
+        return Draft202012Validator(status_schema, registry=registry)
 
     def _cancel_plan_job(self, job_id, identity=None):
         status, payload = self._post(

@@ -218,6 +218,7 @@ class PlanningJobRegistry:
                     if candidate["state"] in NON_TERMINAL_STATES:
                         interrupted = deepcopy(candidate)
                         interrupted["state"] = "interrupted"
+                        interrupted["stage"] = "finished"
                         interrupted["error"] = {
                             "code": "agent_restarted",
                             "message": (
