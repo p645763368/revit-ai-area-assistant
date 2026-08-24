@@ -145,6 +145,28 @@ class PlanningJobRegistryTests(unittest.TestCase):
 
         self.assertIsNone(restored.get(job["job_id"], self.identity))
 
+    def test_registry_skips_parseable_timestamp_that_is_not_rfc3339(self):
+        job, _ = self.registry.submit(self.identity, "scan")
+        path = self.storage_root / (job["job_id"] + ".json")
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["updated_at"] = "2026-08-21X10:00:00+00:00"
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+        restored = PlanningJobRegistry(self.storage_root)
+
+        self.assertIsNone(restored.get(job["job_id"], self.identity))
+
+    def test_transition_does_not_publish_a_timestamp_earlier_than_previous_state(self):
+        job, _ = self.registry.submit(self.identity, "scan")
+        self.registry._clock = lambda: "2026-08-21T09:59:59+00:00"
+
+        running = self.registry.transition(
+            job["job_id"], "running", "validating_context"
+        )
+
+        self.assertEqual(running["created_at"], "2026-08-21T10:00:00+00:00")
+        self.assertEqual(running["updated_at"], "2026-08-21T10:00:00+00:00")
+
     def test_get_and_cancel_hide_jobs_from_a_different_identity(self):
         job, _ = self.registry.submit(self.identity, "scan")
         other_identity = dict(self.identity, context_id="context-b")

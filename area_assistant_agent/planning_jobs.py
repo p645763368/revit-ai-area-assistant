@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import threading
 from typing import Any, Callable, Dict, Optional, Tuple
 import uuid
@@ -55,6 +56,9 @@ ALLOWED_TRANSITIONS = {
 LEGACY_CONFLICT_ERROR_CODE = "legacy_idempotency_conflict"
 LEGACY_CONFLICT_ERROR_MESSAGE = (
     "Conflicting legacy planning jobs were interrupted safely."
+)
+RFC3339_TIMESTAMP = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )
 
 
@@ -159,7 +163,9 @@ class PlanningJobRegistry:
             candidate = deepcopy(record)
             candidate["state"] = state
             candidate["stage"] = stage
-            candidate["updated_at"] = self._timestamp()
+            candidate["updated_at"] = self._monotonic_timestamp(
+                record["updated_at"]
+            )
             candidate["result"], candidate["error"] = self._safe_payload(
                 state, result, error
             )
@@ -181,7 +187,9 @@ class PlanningJobRegistry:
             candidate = deepcopy(record)
             candidate["state"] = "cancelled"
             candidate["stage"] = "finished"
-            candidate["updated_at"] = self._timestamp()
+            candidate["updated_at"] = self._monotonic_timestamp(
+                record["updated_at"]
+            )
             candidate["result"] = None
             candidate["error"] = None
             self._write_record(candidate)
@@ -242,7 +250,9 @@ class PlanningJobRegistry:
                             ),
                             "retryable": True,
                         }
-                        interrupted["updated_at"] = self._timestamp()
+                        interrupted["updated_at"] = self._monotonic_timestamp(
+                            candidate["updated_at"]
+                        )
                         self._write_record(interrupted)
                         candidate = interrupted
                 except (OSError, TypeError, ValueError, json.JSONDecodeError):
@@ -264,7 +274,6 @@ class PlanningJobRegistry:
             self._idempotency_index = idempotency_index
 
     def _migrate_legacy_conflict_records(self, records):
-        timestamp = self._timestamp()
         safe_records = []
         # Keep the legacy marker until every conflicting payload is safe so a
         # later load can retry the whole group after any interrupted write.
@@ -272,7 +281,9 @@ class PlanningJobRegistry:
             candidate = deepcopy(record)
             candidate["state"] = "interrupted"
             candidate["stage"] = "finished"
-            candidate["updated_at"] = timestamp
+            candidate["updated_at"] = self._monotonic_timestamp(
+                record["updated_at"]
+            )
             candidate["result"] = None
             candidate["error"] = {
                 "code": LEGACY_CONFLICT_ERROR_CODE,
@@ -418,12 +429,20 @@ class PlanningJobRegistry:
             raise ValueError("planning job has an invalid state")
         if record.get("stage") not in VALID_STAGES_BY_STATE[state]:
             raise ValueError("planning job has an invalid state/stage combination")
-        PlanningJobRegistry._validate_timestamp(record.get("created_at"))
-        PlanningJobRegistry._validate_timestamp(record.get("updated_at"))
+        created = PlanningJobRegistry._parse_timestamp(record.get("created_at"))
+        updated = PlanningJobRegistry._parse_timestamp(record.get("updated_at"))
+        if updated < created:
+            raise ValueError("planning job timestamp moved backwards")
 
     @staticmethod
     def _validate_timestamp(value: Any) -> None:
+        PlanningJobRegistry._parse_timestamp(value)
+
+    @staticmethod
+    def _parse_timestamp(value: Any) -> datetime:
         if not isinstance(value, str) or not value:
+            raise ValueError("planning job has an invalid timestamp")
+        if RFC3339_TIMESTAMP.match(value) is None:
             raise ValueError("planning job has an invalid timestamp")
         normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
         try:
@@ -433,6 +452,13 @@ class PlanningJobRegistry:
             raise ValueError("planning job has an invalid timestamp")
         if parsed.tzinfo is None or offset is None:
             raise ValueError("planning job has an invalid timestamp")
+        return parsed
+
+    def _monotonic_timestamp(self, previous: str) -> str:
+        current = self._timestamp()
+        if self._parse_timestamp(current) < self._parse_timestamp(previous):
+            return previous
+        return current
 
     @staticmethod
     def _normalize_identity(identity: Dict[str, Any]) -> Dict[str, Any]:
