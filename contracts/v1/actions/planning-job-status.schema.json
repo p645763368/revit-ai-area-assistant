@@ -4,19 +4,6 @@
   "title": "Recoverable planning job status response",
   "$ref": "#/$defs/response",
   "$defs": {
-    "identity": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["context_id", "document_fingerprint", "generation", "panel_instance_id", "project_directory", "session_id"],
-      "properties": {
-        "context_id": {"type": "string", "minLength": 1},
-        "document_fingerprint": {"type": "string", "minLength": 1},
-        "generation": {"type": "integer", "minimum": 0},
-        "panel_instance_id": {"type": "string", "minLength": 1},
-        "project_directory": {"type": "string", "minLength": 1},
-        "session_id": {"type": "string", "minLength": 1}
-      }
-    },
     "result": {
       "type": "object",
       "additionalProperties": false,
@@ -75,6 +62,24 @@
       },
       "allOf": [
         {
+          "if": {"properties": {"state": {"const": "queued"}}},
+          "then": {"properties": {"stage": {"const": "accepted"}}}
+        },
+        {
+          "if": {"properties": {"state": {"const": "running"}}},
+          "then": {
+            "properties": {
+              "stage": {
+                "enum": ["validating_context", "reading_model", "capturing_evidence", "requesting_model", "validating_result", "persisting_result"]
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties": {"state": {"enum": ["completed", "failed", "cancelled", "interrupted"]}}},
+          "then": {"properties": {"stage": {"const": "finished"}}}
+        },
+        {
           "if": {"properties": {"state": {"const": "completed"}}},
           "then": {"properties": {"result": {"$ref": "#/$defs/result"}, "error": {"const": null}}}
         },
@@ -111,7 +116,6 @@
           ]
         }
       ]
-    },
-    "poll_query": {"$ref": "#/$defs/identity"}
+    }
   }
 }

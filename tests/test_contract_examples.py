@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 from pathlib import Path
 import unittest
 
@@ -192,6 +193,81 @@ class SharedContractExamplesTests(unittest.TestCase):
         Draft202012Validator(submit_schema, registry=registry).validate(
             deduplicated_terminal
         )
+
+    def test_planning_job_poll_query_requires_each_identity_field(self):
+        """Fail if the public poll query becomes incomplete or permissive."""
+        actions = CONTRACTS / "actions"
+        example = json.loads(
+            (actions / "examples" / "planning-job-status-query.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        schema = json.loads(
+            (actions / "planning-job-status-query.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        validator = Draft202012Validator(schema)
+        validator.validate(example)
+
+        invalid_values = {
+            "project_directory": "",
+            "panel_instance_id": "",
+            "generation": -1,
+            "context_id": "",
+            "document_fingerprint": "",
+            "session_id": "",
+        }
+        for field, invalid_value in invalid_values.items():
+            with self.subTest(missing=field):
+                missing = deepcopy(example)
+                del missing[field]
+                with self.assertRaises(ValidationError):
+                    validator.validate(missing)
+            with self.subTest(invalid=field):
+                invalid = deepcopy(example)
+                invalid[field] = invalid_value
+                with self.assertRaises(ValidationError):
+                    validator.validate(invalid)
+
+        unexpected = deepcopy(example)
+        unexpected["unexpected"] = "value"
+        with self.assertRaises(ValidationError):
+            validator.validate(unexpected)
+
+    def test_planning_job_status_rejects_impossible_state_stage_combinations(self):
+        """Fail if terminal or queued snapshots advertise an impossible stage."""
+        registry = action_contract_registry()
+        actions = CONTRACTS / "actions"
+        examples = json.loads(
+            (actions / "examples" / "planning-job-status.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        schema = json.loads(
+            (actions / "planning-job-status.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        validator = Draft202012Validator(schema, registry=registry)
+        completed = next(
+            example for example in examples if example["payload"]["state"] == "completed"
+        )
+        running = next(
+            example for example in examples if example["payload"]["state"] == "running"
+        )
+
+        terminal_accepted = deepcopy(completed)
+        terminal_accepted["payload"]["stage"] = "accepted"
+        queued_finished = deepcopy(running)
+        queued_finished["payload"]["state"] = "queued"
+        queued_finished["payload"]["stage"] = "finished"
+        for snapshot in (terminal_accepted, queued_finished):
+            with self.subTest(
+                state=snapshot["payload"]["state"], stage=snapshot["payload"]["stage"]
+            ):
+                with self.assertRaises(ValidationError):
+                    validator.validate(snapshot)
 
 
 if __name__ == "__main__":
