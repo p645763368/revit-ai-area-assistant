@@ -19,6 +19,14 @@ def contract_registry():
     return registry
 
 
+def action_contract_registry():
+    registry = contract_registry()
+    for schema_path in (CONTRACTS / "actions").glob("*.schema.json"):
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        registry = registry.with_resource(schema["$id"], Resource.from_contents(schema))
+    return registry
+
+
 class SharedContractExamplesTests(unittest.TestCase):
     def test_each_public_message_type_has_a_versioned_schema_and_example(self):
         for message_type in ("request", "response", "state", "error"):
@@ -121,6 +129,69 @@ class SharedContractExamplesTests(unittest.TestCase):
         self.assertGreaterEqual(len(options), 2)
         self.assertLessEqual(len(options), 4)
         self.assertEqual(sum(option["recommended"] for option in options), 1)
+
+    def test_planning_job_action_examples_cover_the_public_lifecycle(self):
+        """Fail if an API action loses a required request or terminal snapshot."""
+        registry = action_contract_registry()
+        actions = CONTRACTS / "actions"
+        examples = actions / "examples"
+        for action in ("submit", "cancel"):
+            with self.subTest(action=action):
+                schema = json.loads(
+                    (actions / "planning-job-{}.schema.json".format(action)).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                example = json.loads(
+                    (examples / "planning-job-{}.json".format(action)).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                Draft202012Validator.check_schema(schema)
+                Draft202012Validator(schema, registry=registry).validate(example)
+
+        status_examples = json.loads(
+            (examples / "planning-job-status.json").read_text(encoding="utf-8")
+        )
+        status_schema = json.loads(
+            (actions / "planning-job-status.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        Draft202012Validator.check_schema(status_schema)
+        status_validator = Draft202012Validator(status_schema, registry=registry)
+        for example in status_examples:
+            with self.subTest(status_state=example["payload"]["state"]):
+                status_validator.validate(example)
+        states = {example["payload"]["state"] for example in status_examples}
+        self.assertTrue(states & {"queued", "running"})
+        self.assertTrue(
+            {"completed", "failed", "cancelled", "interrupted"}.issubset(states)
+        )
+
+    def test_planning_job_submit_response_keeps_accepted_status_for_deduplicated_terminal_job(self):
+        """Fail if submit responses adopt the poll endpoint's terminal status."""
+        registry = action_contract_registry()
+        submit_schema = json.loads(
+            (
+                CONTRACTS / "actions" / "planning-job-submit.schema.json"
+            ).read_text(encoding="utf-8")
+        )
+        status_examples = json.loads(
+            (
+                CONTRACTS / "actions" / "examples" / "planning-job-status.json"
+            ).read_text(encoding="utf-8")
+        )
+        deduplicated_terminal = next(
+            example
+            for example in status_examples
+            if example["payload"]["state"] == "completed"
+        )
+        deduplicated_terminal["status"] = "accepted"
+
+        Draft202012Validator(submit_schema, registry=registry).validate(
+            deduplicated_terminal
+        )
 
 
 if __name__ == "__main__":

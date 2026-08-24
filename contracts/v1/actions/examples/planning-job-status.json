@@ -1,0 +1,84 @@
+[
+  {
+    "contract_version": "1.0",
+    "message_type": "response",
+    "request_id": "plan-job-status",
+    "status": "accepted",
+    "payload": {
+      "job_id": "job-example-running",
+      "state": "running",
+      "stage": "reading_model",
+      "created_at": "2026-08-21T10:00:00+00:00",
+      "updated_at": "2026-08-21T10:00:02+00:00",
+      "result": null,
+      "error": null
+    }
+  },
+  {
+    "contract_version": "1.0",
+    "message_type": "response",
+    "request_id": "plan-job-status",
+    "status": "completed",
+    "payload": {
+      "job_id": "job-example-completed",
+      "state": "completed",
+      "stage": "finished",
+      "created_at": "2026-08-21T10:00:00+00:00",
+      "updated_at": "2026-08-21T10:00:05+00:00",
+      "result": {
+        "summary": "结构化模型证据显示两个候选来源。",
+        "question": "本轮采用哪个来源继续精确核对？",
+        "options": [
+          {"id": "floor", "label": "采用楼板轮廓", "recommended": true, "rationale": "候选楼板轮廓完整。", "impact": "继续读取精确楼板几何。"},
+          {"id": "walls", "label": "采用外墙中心线", "recommended": false, "rationale": "墙体可作为交叉证据。", "impact": "检查墙连接和洞口。"}
+        ]
+      },
+      "error": null
+    }
+  },
+  {
+    "contract_version": "1.0",
+    "message_type": "response",
+    "request_id": "plan-job-status",
+    "status": "completed",
+    "payload": {
+      "job_id": "job-example-failed",
+      "state": "failed",
+      "stage": "finished",
+      "created_at": "2026-08-21T10:00:00+00:00",
+      "updated_at": "2026-08-21T10:00:05+00:00",
+      "result": null,
+      "error": {"code": "planning_failed", "message": "Planning failed.", "retryable": true}
+    }
+  },
+  {
+    "contract_version": "1.0",
+    "message_type": "response",
+    "request_id": "plan-job-status",
+    "status": "cancelled",
+    "payload": {
+      "job_id": "job-example-cancelled",
+      "state": "cancelled",
+      "stage": "finished",
+      "created_at": "2026-08-21T10:00:00+00:00",
+      "updated_at": "2026-08-21T10:00:05+00:00",
+      "result": null,
+      "error": null
+    }
+  },
+  {
+    "contract_version": "1.0",
+    "message_type": "response",
+    "request_id": "plan-job-status",
+    "status": "completed",
+    "payload": {
+      "job_id": "job-example-interrupted",
+      "state": "interrupted",
+      "stage": "finished",
+      "created_at": "2026-08-21T10:00:00+00:00",
+      "updated_at": "2026-08-21T10:00:05+00:00",
+      "result": null,
+      "error": {"code": "agent_restarted", "message": "The Agent restarted before planning completed.", "retryable": true}
+    }
+  }
+]

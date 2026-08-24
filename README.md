@@ -121,6 +121,20 @@ Issue #7 在不改变 v1 信封的前提下新增兼容 action `analysis.plan`�
 
 规划结果固定返回 2 至 4 个可点击选项，恰好一个推荐项，每项显示依据和影响。用户既可点击选项，也可在原输入框自由说明；两者都会通过同一文档会话的历史继续规划。该功能不创建 Transaction、不修改模型、不自动保存 RVT。真实模型 API 与 Revit 2026 验收步骤见 [`docs/issue-7-revit-manual-test.md`](docs/issue-7-revit-manual-test.md)。
 
+### 可恢复的规划任务
+
+规划按钮使用兼容的 v1 任务接口，不改变既有 `contract_version: "1.0"` 信封：
+
+- `POST /v1/plan-jobs` 使用 `analysis.plan.submit` 提交；相同会话、文档、面板代次和规范化消息会返回同一个任务，首次创建返回 HTTP 202，去重命中返回 HTTP 200。
+- `GET /v1/plan-jobs/{job_id}` 使用 URL 查询参数携带 `project_directory`、`panel_instance_id`、`generation`、`context_id`、`document_fingerprint` 和 `session_id` 轮询同一任务。
+- `POST /v1/plan-jobs/{job_id}/cancel` 使用 `analysis.plan.cancel` 取消；对同一任务重复取消安全且幂等。
+
+公开快照包含 `job_id`、`state`、`stage`、创建/更新时间，以及互斥的 `result` 或 `error`。`queued`、`running` 为非终态；`completed`、`failed`、`cancelled`、`interrupted` 为终态。`stage` 仅表示当前真实活动（如读取模型、请求模型或保存结果），模型工具循环可在这些阶段间往返，调用方不得假设固定阶段顺序。`completed` 必须带结构化方案；`failed` 和 `interrupted` 必须带安全的 `{code, message, retryable}` 错误；其余状态的 `result` 与 `error` 均为 `null`。
+
+一次轮询的网络超时不代表任务失败：面板会保留原 `job_id`、显示等待/重连状态并重新查询，绝不因此提交新的付费规划。Agent 重启时未完成任务会以 `interrupted` 返回，用户可在确认后点击“重试”发出一次明确的 `retry_terminal: true`；自动的传输恢复始终使用 `false`，因此不会擅自重放终态任务。
+
+人工 Revit 验收应在指定测试副本且不保存的前提下完成：将规划器延迟设为旧请求超时以上，确认面板保持运行/等待、Agent 只执行一次规划且最后显示结构化选项；再强制一次轮询失败并连续点击按钮，确认同一 `job_id` 最终完成、没有重复模型请求。完整的无写入检查继续以 [`docs/issue-7-revit-manual-test.md`](docs/issue-7-revit-manual-test.md) 为准。
+
 ## 本地数据和凭据
 
 本仓库只保存代码、匿名示例和文档。`.gitignore`阻止常见RVT、凭据、日志、截图和`AI_Area_Assistant_Data`进入Git，但提交前仍必须人工检查暂存文件。真实API密钥只能通过用户级环境变量或安全凭据提供。

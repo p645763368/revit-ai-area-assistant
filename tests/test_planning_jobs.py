@@ -486,7 +486,7 @@ class PlanningJobRegistryTests(unittest.TestCase):
 
     def test_result_and_error_are_validated_and_redacted_before_persistence(self):
         result = self._valid_result(
-            "Authorization: Bearer result-secret password=result-password"
+            "Authorization: Bearer short password=result-password"
         )
         job, _ = self.registry.submit(self.identity, "scan")
         self.registry.transition(job["job_id"], "running", "reading_model")
@@ -498,7 +498,7 @@ class PlanningJobRegistryTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertNotIn("result-secret", persisted_text)
+        self.assertNotIn("short", persisted_text)
         self.assertNotIn("result-password", persisted_text)
         self.assertIn("[REDACTED]", persisted_text)
         self.assertIn("[REDACTED]", completed["result"]["summary"])
@@ -517,7 +517,7 @@ class PlanningJobRegistryTests(unittest.TestCase):
             error={
                 "code": "planning_failed",
                 "message": (
-                    "Authorization: Bearer error-secret "
+                    "Authorization: Bearer brief "
                     "password=error-password"
                 ),
                 "retryable": True,
@@ -528,7 +528,7 @@ class PlanningJobRegistryTests(unittest.TestCase):
         )
 
         self.assertEqual(set(failed["error"]), {"code", "message", "retryable"})
-        self.assertNotIn("error-secret", all_persisted_text)
+        self.assertNotIn("brief", all_persisted_text)
         self.assertNotIn("error-password", all_persisted_text)
         self.assertIn("[REDACTED]", failed["error"]["message"])
 
