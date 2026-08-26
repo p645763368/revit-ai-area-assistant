@@ -47,7 +47,8 @@ class ModelDiagnosticsTests(unittest.TestCase):
             )
 
             self.assertEqual(
-                path, session_directory / "model_diagnostics" / "protocol.jsonl"
+                path,
+                (session_directory / "model_diagnostics" / "protocol.jsonl").resolve(),
             )
             records = [
                 json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
