@@ -19,6 +19,8 @@ screenshots/
 
 # Python and test caches
 __pycache__/
+**/bin/
+**/obj/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
