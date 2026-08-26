@@ -43,12 +43,85 @@ def _protocol_error_for_payload(payload):
     return _protocol_error(summarize_chat_completion_shape(payload))
 
 
+_USAGE_EVENT_KEYS = {
+    "id",
+    "object",
+    "created",
+    "model",
+    "system_fingerprint",
+    "choices",
+    "usage",
+}
+_USAGE_REQUIRED_KEYS = {"prompt_tokens", "completion_tokens", "total_tokens"}
+_USAGE_OPTIONAL_INTEGER_KEYS = {
+    "prompt_cache_hit_tokens",
+    "prompt_cache_miss_tokens",
+}
+_USAGE_DETAIL_KEYS = {
+    "prompt_tokens_details": {"cached_tokens", "audio_tokens"},
+    "completion_tokens_details": {
+        "reasoning_tokens",
+        "audio_tokens",
+        "accepted_prediction_tokens",
+        "rejected_prediction_tokens",
+    },
+}
+
+
+def _is_nonnegative_integer(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _valid_usage_event(event):
+    if set(event) - _USAGE_EVENT_KEYS or event.get("choices") != []:
+        return False
+    usage = event.get("usage")
+    if not isinstance(usage, dict) or not _USAGE_REQUIRED_KEYS.issubset(usage):
+        return False
+    allowed_usage_keys = (
+        _USAGE_REQUIRED_KEYS
+        | _USAGE_OPTIONAL_INTEGER_KEYS
+        | set(_USAGE_DETAIL_KEYS)
+    )
+    if set(usage) - allowed_usage_keys:
+        return False
+    integer_keys = _USAGE_REQUIRED_KEYS | _USAGE_OPTIONAL_INTEGER_KEYS
+    if any(
+        key in usage and not _is_nonnegative_integer(usage[key])
+        for key in integer_keys
+    ):
+        return False
+    for key, allowed_detail_keys in _USAGE_DETAIL_KEYS.items():
+        if key not in usage:
+            continue
+        details = usage[key]
+        if (
+            not isinstance(details, dict)
+            or set(details) - allowed_detail_keys
+            or any(not _is_nonnegative_integer(value) for value in details.values())
+        ):
+            return False
+    for key in ("id", "object", "model"):
+        if key in event and not isinstance(event[key], str):
+            return False
+    if "created" in event and not _is_nonnegative_integer(event["created"]):
+        return False
+    if "system_fingerprint" in event and not (
+        event["system_fingerprint"] is None
+        or isinstance(event["system_fingerprint"], str)
+    ):
+        return False
+    return True
+
+
 def _normalize_sse_event(event):
     """Return a validated text delta and termination flag for one SSE event."""
     if not isinstance(event, dict):
         raise _protocol_error_for_payload(event)
     choices = event.get("choices")
-    if choices == [] or (choices is None and "usage" in event):
+    if choices == [] or "usage" in event:
+        if not _valid_usage_event(event):
+            raise _protocol_error_for_payload(event)
         return None, False
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         raise _protocol_error_for_payload(event)
@@ -59,7 +132,7 @@ def _normalize_sse_event(event):
         return None, True
     if not isinstance(delta, dict):
         raise _protocol_error_for_payload(event)
-    if set(delta) - {"role", "content"}:
+    if set(delta) - {"role", "content", "reasoning_content"}:
         raise _protocol_error_for_payload(event)
     if "role" in delta and not isinstance(delta["role"], str):
         raise _protocol_error_for_payload(event)

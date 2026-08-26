@@ -268,6 +268,88 @@ class ModelPlanningApiTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "model_protocol_error")
                 self.assertNotIn("secret", serialized)
 
+    def test_stream_content_with_reasoning_is_accepted_while_reasoning_is_ignored(self):
+        response = _StreamingResponse(
+            [
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "content": "visible-content",
+                                "reasoning_content": "secret-reasoning-sentinel",
+                            }
+                        }
+                    ]
+                },
+                {"choices": [{"finish_reason": "stop"}]},
+            ]
+        )
+
+        with patch("area_assistant_agent.model_api.urlopen", return_value=response):
+            result = list(self.client.stream_reply("message"))
+
+        self.assertEqual(result, ["visible-content"])
+        self.assertNotIn("secret", json.dumps(result))
+
+    def test_stream_usage_event_is_strict_and_cannot_be_rehabilitated_by_later_content(self):
+        valid_usage = {
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9,
+            },
+        }
+        valid_response = _StreamingResponse(
+            [
+                valid_usage,
+                {"choices": [{"delta": {"content": "visible-content"}}]},
+                {"choices": [{"finish_reason": "stop"}]},
+            ]
+        )
+        with patch(
+            "area_assistant_agent.model_api.urlopen", return_value=valid_response
+        ) as opened:
+            self.assertEqual(
+                list(self.client.stream_reply("message")), ["visible-content"]
+            )
+        self.assertEqual(opened.call_count, 1)
+
+        malformed_usage_events = (
+            {"choices": []},
+            {"usage": valid_usage["usage"]},
+            {"choices": [], "usage": "secret-usage-string"},
+            dict(valid_usage, unknown="secret-unknown-top-level"),
+            {
+                "choices": [],
+                "usage": dict(valid_usage["usage"], unknown=1),
+            },
+            {
+                "choices": [],
+                "usage": dict(valid_usage["usage"], prompt_tokens=-1),
+            },
+            {
+                "choices": [],
+                "usage": dict(valid_usage["usage"], completion_tokens=True),
+            },
+        )
+        later_valid_events = [
+            {"choices": [{"delta": {"content": "must-not-rehabilitate"}}]},
+            {"choices": [{"finish_reason": "stop"}]},
+        ]
+        for malformed in malformed_usage_events:
+            with self.subTest(malformed=malformed):
+                response = _StreamingResponse([malformed] + later_valid_events)
+                with patch(
+                    "area_assistant_agent.model_api.urlopen", return_value=response
+                ) as opened:
+                    with self.assertRaises(ModelApiError) as caught:
+                        list(self.client.stream_reply("message"))
+
+                self.assertEqual(opened.call_count, 1)
+                self.assertEqual(caught.exception.code, "model_protocol_error")
+                self.assertNotIn("secret", json.dumps(caught.exception.diagnostic))
+
 
 class _Response:
     def __init__(self, payload):
