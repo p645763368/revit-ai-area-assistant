@@ -28,6 +28,10 @@
     <Compile Include="App.cs" />
     <Compile Include="ShowPaneCommand.cs" />
     <Compile Include="AreaAssistantPaneProvider.cs" />
+    <Compile Include="Agent\AgentProcess.cs" />
+    <Compile Include="Agent\AgentClient.cs" />
+    <Compile Include="Agent\Contracts.cs" />
+    <Compile Include="Planning\PlanningCoordinator.cs" />
     <Compile Include="AreaAssistantPane.xaml.cs">
       <DependentUpon>AreaAssistantPane.xaml</DependentUpon>
     </Compile>
