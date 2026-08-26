@@ -44,6 +44,22 @@ class ModelProtocolTests(unittest.TestCase):
         call = normalize_chat_completion(payload)["tool_calls"][0]
         self.assertEqual(call["id"], "legacy-call-0")
 
+    def test_rejects_blank_tool_call_identifiers(self):
+        for call_id, name in [
+            ("", "inspect_revit_model"),
+            ("   ", "inspect_revit_model"),
+            ("call-1", ""),
+            ("call-1", "   "),
+        ]:
+            payload = {"choices": [{"message": {
+                "content": None,
+                "tool_calls": [{"id": call_id, "type": "function",
+                    "function": {"name": name, "arguments": {}}}],
+            }}]}
+            with self.subTest(call_id=call_id, name=name):
+                with self.assertRaises(ProtocolShapeError):
+                    normalize_chat_completion(payload)
+
     def test_rejects_reasoning_only_or_unknown_content(self):
         invalid = [
             {"choices": [{"message": {"content": None, "reasoning_content": "secret"}}]},

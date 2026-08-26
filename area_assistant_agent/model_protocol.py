@@ -195,7 +195,13 @@ def _normalize_calls(message: Dict[str, Any]) -> list[Dict[str, Any]] | None:
             call_id = raw_call.get("id")
             name = function.get("name")
             arguments = _normalize_arguments(function.get("arguments"))
-            if not isinstance(call_id, str) or not isinstance(name, str) or arguments is None:
+            if (
+                not isinstance(call_id, str)
+                or not call_id.strip()
+                or not isinstance(name, str)
+                or not name.strip()
+                or arguments is None
+            ):
                 return None
             calls.append({"id": call_id, "name": name, "arguments": arguments})
         return calls
@@ -203,7 +209,11 @@ def _normalize_calls(message: Dict[str, Any]) -> list[Dict[str, Any]] | None:
     legacy = message.get("function_call")
     if legacy is None:
         return []
-    if not isinstance(legacy, dict) or not isinstance(legacy.get("name"), str):
+    if (
+        not isinstance(legacy, dict)
+        or not isinstance(legacy.get("name"), str)
+        or not legacy["name"].strip()
+    ):
         return None
     arguments = _normalize_arguments(legacy.get("arguments"))
     if arguments is None:

@@ -12,12 +12,22 @@ from area_assistant_agent.planning import (
     PlanningResult,
     READ_ONLY_QUERIES,
     ReadOnlyRevitTools,
+    TOOL_DEFINITIONS,
 )
 from area_assistant_agent.document_binding import document_fingerprint
 from area_assistant_agent.rvt_mcp_gateway import DOCUMENT_EVIDENCE_CODE
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class ToolDefinitionTests(unittest.TestCase):
+    def test_capture_schema_explicitly_allows_no_required_arguments(self):
+        capture = next(
+            tool for tool in TOOL_DEFINITIONS
+            if tool["function"]["name"] == "capture_revit_view"
+        )
+        self.assertEqual(capture["function"]["parameters"]["required"], [])
 
 
 class _ScriptedModel:

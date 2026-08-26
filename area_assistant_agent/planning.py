@@ -97,6 +97,7 @@ TOOL_DEFINITIONS = [
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
+                "required": [],
                 "properties": {"view_id": {"type": ["integer", "null"]}},
             },
         },
