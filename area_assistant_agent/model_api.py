@@ -138,6 +138,8 @@ def _normalize_sse_event(event):
         raise _protocol_error_for_payload(event)
     content = delta.get("content")
     if content is None:
+        if "reasoning_content" in delta:
+            raise _protocol_error_for_payload(event)
         if terminated or "role" in delta:
             return None, terminated
         raise _protocol_error_for_payload(event)

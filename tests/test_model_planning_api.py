@@ -350,6 +350,46 @@ class ModelPlanningApiTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "model_protocol_error")
                 self.assertNotIn("secret", json.dumps(caught.exception.diagnostic))
 
+    def test_stream_reasoning_only_finish_event_invalidates_prior_content_without_leaking(self):
+        response = _StreamingResponse(
+            [
+                {"choices": [{"delta": {"content": "visible-content"}}]},
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "reasoning_content": "secret-finish-reasoning"
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ]
+                },
+            ]
+        )
+
+        with patch(
+            "area_assistant_agent.model_api.urlopen", return_value=response
+        ) as opened:
+            with self.assertRaises(ModelApiError) as caught:
+                list(self.client.stream_reply("message"))
+
+        self.assertEqual(opened.call_count, 1)
+        self.assertEqual(caught.exception.code, "model_protocol_error")
+        self.assertNotIn("secret", json.dumps(caught.exception.diagnostic))
+
+    def test_stream_empty_delta_finish_event_remains_valid(self):
+        response = _StreamingResponse(
+            [
+                {"choices": [{"delta": {"content": "visible-content"}}]},
+                {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            ]
+        )
+
+        with patch("area_assistant_agent.model_api.urlopen", return_value=response):
+            self.assertEqual(
+                list(self.client.stream_reply("message")), ["visible-content"]
+            )
+
 
 class _Response:
     def __init__(self, payload):
