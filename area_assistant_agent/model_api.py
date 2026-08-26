@@ -43,6 +43,36 @@ def _protocol_error_for_payload(payload):
     return _protocol_error(summarize_chat_completion_shape(payload))
 
 
+def _normalize_sse_event(event):
+    """Return a validated text delta and termination flag for one SSE event."""
+    if not isinstance(event, dict):
+        raise _protocol_error_for_payload(event)
+    choices = event.get("choices")
+    if choices == [] or (choices is None and "usage" in event):
+        return None, False
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise _protocol_error_for_payload(event)
+    choice = choices[0]
+    terminated = choice.get("finish_reason") is not None
+    delta = choice.get("delta")
+    if delta is None and terminated:
+        return None, True
+    if not isinstance(delta, dict):
+        raise _protocol_error_for_payload(event)
+    if set(delta) - {"role", "content"}:
+        raise _protocol_error_for_payload(event)
+    if "role" in delta and not isinstance(delta["role"], str):
+        raise _protocol_error_for_payload(event)
+    content = delta.get("content")
+    if content is None:
+        if terminated or "role" in delta:
+            return None, terminated
+        raise _protocol_error_for_payload(event)
+    if not isinstance(content, str):
+        raise _protocol_error_for_payload(event)
+    return content, terminated
+
+
 class OpenAICompatibleClient:
     def __init__(self, config):
         self._config = config
@@ -74,41 +104,30 @@ class OpenAICompatibleClient:
         )
         try:
             terminated = False
+            received_content = False
             with urlopen(request, timeout=self._config.timeout_seconds) as response:
                 for raw_line in response:
-                    line = raw_line.decode("utf-8").strip()
+                    try:
+                        line = raw_line.decode("utf-8").strip()
+                    except UnicodeDecodeError:
+                        raise _protocol_error_for_payload(None) from None
                     if not line.startswith("data:"):
                         continue
                     data = line[5:].strip()
                     if data == "[DONE]":
+                        if not terminated or not received_content:
+                            raise _protocol_error_for_payload(None)
                         return
                     try:
                         event = json.loads(data)
                     except ValueError:
                         raise _protocol_error_for_payload(None) from None
-                    if not isinstance(event, dict):
-                        raise _protocol_error_for_payload(event)
-                    choices = event.get("choices")
-                    if choices == [] or (choices is None and "usage" in event):
-                        continue
-                    if not isinstance(choices, list) or not isinstance(choices[0], dict):
-                        raise _protocol_error_for_payload(event)
-                    choice = choices[0]
-                    if choice.get("finish_reason") is not None:
-                        terminated = True
-                    delta = choice.get("delta")
-                    if delta is None and choice.get("finish_reason") is not None:
-                        continue
-                    if not isinstance(delta, dict):
-                        raise _protocol_error_for_payload(event)
-                    content = delta.get("content")
-                    if content is None:
-                        continue
-                    if not isinstance(content, str):
-                        raise _protocol_error_for_payload(event)
+                    content, event_terminated = _normalize_sse_event(event)
+                    terminated = terminated or event_terminated
                     if content:
+                        received_content = True
                         yield content
-            if not terminated:
+            if not terminated or not received_content:
                 raise _protocol_error_for_payload(None)
         except HTTPError as exc:
             raise ModelApiError(
@@ -155,7 +174,10 @@ class OpenAICompatibleClient:
         )
         try:
             with urlopen(request, timeout=self._config.timeout_seconds) as response:
-                decoded_body = response.read().decode("utf-8")
+                try:
+                    decoded_body = response.read().decode("utf-8")
+                except UnicodeDecodeError:
+                    raise _protocol_error_for_payload(None) from None
             try:
                 payload = json.loads(decoded_body)
             except (TypeError, ValueError):

@@ -37,8 +37,8 @@ def _response(request_id, status, payload):
     }
 
 
-def _error(request_id, code, message, retryable):
-    return {
+def _error(request_id, code, message, retryable, diagnostic_id=None):
+    envelope = {
         "contract_version": CONTRACT_VERSION,
         "message_type": "error",
         "request_id": request_id,
@@ -47,6 +47,26 @@ def _error(request_id, code, message, retryable):
         "retryable": retryable,
         "details": {},
     }
+    if diagnostic_id is not None:
+        envelope["diagnostic_id"] = diagnostic_id
+    return envelope
+
+
+def _persist_model_error_diagnostic(
+    session_directory, correlation_id, error
+):
+    if error.diagnostic is None or error.diagnostic_id is None:
+        return None
+    try:
+        persist_model_diagnostic(
+            session_directory,
+            correlation_id,
+            error.diagnostic_id,
+            error.diagnostic,
+        )
+    except Exception:
+        return None
+    return error.diagnostic_id
 
 
 def _identity(request):
@@ -270,18 +290,11 @@ def _run_plan_job(server, registry, job_id, request, identity):
                 "message": str(error),
                 "retryable": error.retryable,
             }
-            if error.diagnostic is not None and error.diagnostic_id is not None:
-                try:
-                    persist_model_diagnostic(
-                        registry.storage_root.parent,
-                        job_id,
-                        error.diagnostic_id,
-                        error.diagnostic,
-                    )
-                except Exception:
-                    pass
-                else:
-                    public_error["diagnostic_id"] = error.diagnostic_id
+            diagnostic_id = _persist_model_error_diagnostic(
+                registry.storage_root.parent, job_id, error
+            )
+            if diagnostic_id is not None:
+                public_error["diagnostic_id"] = diagnostic_id
             registry.transition(
                 job_id,
                 "failed",
@@ -371,6 +384,8 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             self._write_json(400, _error(None, "invalid_request", "Request is invalid.", False))
             return
 
+        diagnostic_target = self._active_session_diagnostic_target()
+
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -385,8 +400,20 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 self._write_event(_response(request_id, "accepted", {"delta": delta}))
             self._write_event(_response(request_id, "completed", {"message": "".join(complete)}))
         except ModelApiError as exc:
-            self._persist_active_session_diagnostic(exc)
-            self._write_event(_error(request_id, exc.code, str(exc), exc.retryable))
+            diagnostic_id = None
+            if diagnostic_target is not None:
+                diagnostic_id = _persist_model_error_diagnostic(
+                    diagnostic_target[0], diagnostic_target[1], exc
+                )
+            self._write_event(
+                _error(
+                    request_id,
+                    exc.code,
+                    str(exc),
+                    exc.retryable,
+                    diagnostic_id=diagnostic_id,
+                )
+            )
 
     def _open_session(self):
         try:
@@ -819,9 +846,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         payload["request_id"] = request["request_id"]
         return payload
 
-    def _persist_active_session_diagnostic(self, error):
-        if error.diagnostic is None or error.diagnostic_id is None:
-            return
+    def _active_session_diagnostic_target(self):
         try:
             with self.server.session_lock:
                 context = self.server.session_context
@@ -837,14 +862,9 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 session_directory = repository.session_directory(
                     document_fingerprint, session_id
                 )
-            persist_model_diagnostic(
-                session_directory,
-                context_id,
-                error.diagnostic_id,
-                error.diagnostic,
-            )
+            return session_directory, context_id
         except Exception:
-            pass
+            return None
 
     @staticmethod
     def _panel_generation(request):

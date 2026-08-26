@@ -31,7 +31,11 @@ class _StreamingModelHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
-        if "/malformed/" in self.path:
+        if "blocked-malformed" in self.path:
+            self.server.request_started.set()
+            if not self.server.release_response.wait(2):
+                return
+        if "malformed" in self.path:
             event = {
                 "choices": [
                     {"delta": {"content": ["secret-stream-content"]}}
@@ -76,6 +80,8 @@ class AgentChatApiTests(unittest.TestCase):
     def setUp(self):
         self.model_server = ThreadingHTTPServer(("127.0.0.1", 0), _StreamingModelHandler)
         self.model_server.request_count = 0
+        self.model_server.request_started = threading.Event()
+        self.model_server.release_response = threading.Event()
         self.model_thread = threading.Thread(target=self.model_server.serve_forever)
         self.model_thread.daemon = True
         self.model_thread.start()
@@ -286,8 +292,53 @@ class AgentChatApiTests(unittest.TestCase):
             self.assertEqual(self.model_server.request_count, 1)
             self.assertEqual(len(diagnostics), 1)
             persisted = diagnostics[0].read_text(encoding="utf-8")
+            record = json.loads(persisted)
+            self.assertEqual(events[-1]["diagnostic_id"], record["diagnostic_id"])
             self.assertNotIn("secret", persisted)
             self.assertNotIn("secret", json.dumps(events))
+
+    def test_chat_diagnostic_stays_with_request_origin_session_after_session_switch(self):
+        self._restart_agent("blocked-malformed", timeout_seconds=2)
+        with tempfile.TemporaryDirectory() as project_directory:
+            first = self._open_new_session(project_directory, generation=1)
+            results = []
+            failures = []
+
+            def send_chat():
+                try:
+                    results.extend(self._send_chat("req-session-switch"))
+                except Exception as error:
+                    failures.append(error)
+
+            worker = threading.Thread(target=send_chat, daemon=True)
+            worker.start()
+            self.assertTrue(self.model_server.request_started.wait(1))
+            try:
+                second = self._open_new_session(project_directory, generation=2)
+            finally:
+                self.model_server.release_response.set()
+            worker.join(2)
+
+            session_directories = list(
+                Path(project_directory).glob(
+                    "AI_Area_Assistant_Data/documents/*/sessions/*"
+                )
+            )
+            first_directory = next(
+                path for path in session_directories if path.name == first["session_id"]
+            )
+            second_directory = next(
+                path for path in session_directories if path.name == second["session_id"]
+            )
+
+            self.assertEqual(failures, [])
+            self.assertEqual(results[-1]["code"], "model_protocol_error")
+            self.assertEqual(
+                len(list(first_directory.glob("model_diagnostics/*.jsonl"))), 1
+            )
+            self.assertEqual(
+                list(second_directory.glob("model_diagnostics/*.jsonl")), []
+            )
 
     def _restart_agent(self, prefix, timeout_seconds):
         self.agent_server.shutdown()
@@ -344,6 +395,35 @@ class AgentChatApiTests(unittest.TestCase):
         with urlopen(request, timeout=2) as response:
             envelope = json.loads(response.read().decode("utf-8"))
         return envelope["payload"]
+
+    def _open_new_session(self, project_directory, generation):
+        opened = self._post_session(
+            "/v1/sessions/open",
+            "session.open",
+            {
+                "document_fingerprint": "document-a",
+                "generation": generation,
+                "panel_instance_id": "panel-a",
+                "project_directory": project_directory,
+            },
+        )
+        chosen = self._post_session(
+            "/v1/sessions/choose",
+            "session.choose",
+            {
+                "choice": "new",
+                "context_id": opened["context_id"],
+                "document_fingerprint": "document-a",
+                "generation": generation,
+                "panel_instance_id": "panel-a",
+                "project_directory": project_directory,
+                "session_id": None,
+            },
+        )
+        return {
+            "context_id": chosen["context_id"],
+            "session_id": chosen["active_session_id"],
+        }
 
 
 if __name__ == "__main__":

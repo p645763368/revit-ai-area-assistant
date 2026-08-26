@@ -29,6 +29,21 @@ def action_contract_registry():
 
 
 class SharedContractExamplesTests(unittest.TestCase):
+    def test_public_error_contract_accepts_optional_safe_diagnostic_id(self):
+        schema = json.loads(
+            (CONTRACTS / "error.schema.json").read_text(encoding="utf-8")
+        )
+        example = json.loads(
+            (CONTRACTS / "examples" / "error.json").read_text(encoding="utf-8")
+        )
+        example["diagnostic_id"] = "diag-test-1234"
+
+        Draft202012Validator(schema).validate(example)
+
+        example["diagnostic_id"] = "invalid diagnostic"
+        with self.assertRaises(ValidationError):
+            Draft202012Validator(schema).validate(example)
+
     def test_each_public_message_type_has_a_versioned_schema_and_example(self):
         for message_type in ("request", "response", "state", "error"):
             with self.subTest(message_type=message_type):

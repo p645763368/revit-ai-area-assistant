@@ -216,6 +216,58 @@ class ModelPlanningApiTests(unittest.TestCase):
         self.assertIn('"keys"', serialized)
         self.assertIn('"type"', serialized)
 
+    def test_planning_invalid_utf8_is_a_safe_protocol_error(self):
+        with patch(
+            "area_assistant_agent.model_api.urlopen",
+            return_value=_RawResponse(b"\xffsecret"),
+        ):
+            with self.assertRaises(ModelApiError) as caught:
+                self.client.planning_turn([], [])
+
+        self.assertEqual(caught.exception.code, "model_protocol_error")
+        self.assertEqual(
+            str(caught.exception), "Model API returned an incompatible response."
+        )
+        self.assertNotIn("secret", json.dumps(caught.exception.diagnostic))
+
+    def test_stream_invalid_utf8_is_a_safe_protocol_error(self):
+        with patch(
+            "area_assistant_agent.model_api.urlopen",
+            return_value=_RawStreamingResponse([b"data: \xffsecret\n\n"]),
+        ):
+            with self.assertRaises(ModelApiError) as caught:
+                list(self.client.stream_reply("message"))
+
+        self.assertEqual(caught.exception.code, "model_protocol_error")
+        self.assertEqual(
+            str(caught.exception), "Model API returned an incompatible response."
+        )
+        self.assertNotIn("secret", json.dumps(caught.exception.diagnostic))
+
+    def test_stream_reasoning_only_or_unknown_delta_fails_closed_without_leaking_values(self):
+        malformed_events = (
+            {
+                "choices": [
+                    {"delta": {"reasoning_content": "secret-reasoning-sentinel"}}
+                ]
+            },
+            {"choices": [{"delta": {"unknown": "secret-unknown-sentinel"}}]},
+        )
+        for event in malformed_events:
+            with self.subTest(event_keys=sorted(event["choices"][0]["delta"])):
+                with patch(
+                    "area_assistant_agent.model_api.urlopen",
+                    return_value=_StreamingResponse(
+                        [event, {"choices": [{"finish_reason": "stop"}]}]
+                    ),
+                ):
+                    with self.assertRaises(ModelApiError) as caught:
+                        list(self.client.stream_reply("message"))
+
+                serialized = json.dumps(caught.exception.diagnostic)
+                self.assertEqual(caught.exception.code, "model_protocol_error")
+                self.assertNotIn("secret", serialized)
+
 
 class _Response:
     def __init__(self, payload):
@@ -229,6 +281,11 @@ class _Response:
 
     def read(self):
         return self._body
+
+
+class _RawResponse(_Response):
+    def __init__(self, body):
+        self._body = body
 
 
 class _StreamingResponse:
@@ -246,6 +303,11 @@ class _StreamingResponse:
 
     def __iter__(self):
         return iter(self._lines)
+
+
+class _RawStreamingResponse(_StreamingResponse):
+    def __init__(self, lines):
+        self._lines = lines
 
 
 if __name__ == "__main__":
