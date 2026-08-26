@@ -154,11 +154,11 @@ class PlanningAgentTests(unittest.TestCase):
                     expected_tools.append("capture_revit_view")
                 self.assertEqual(
                     [[item["function"]["name"] for item in tools] for _, tools in model.requests],
-                    [expected_tools, expected_tools],
+                    [expected_tools, []],
                 )
                 self.assertEqual(
                     model.response_formats,
-                    [PLANNING_RESPONSE_FORMAT, PLANNING_RESPONSE_FORMAT],
+                    [None, PLANNING_RESPONSE_FORMAT],
                 )
 
     def test_agent_can_inspect_and_capture_before_returning_structured_options(self):

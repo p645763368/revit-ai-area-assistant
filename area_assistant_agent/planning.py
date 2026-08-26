@@ -375,12 +375,15 @@ class PlanningAgent:
             structured_geometry_available = False
             if screenshot_failure is not None:
                 audit("capture_revit_view", {}, None, screenshot_failure)
+            final_response_requested = False
             for _ in range(self.max_turns):
                 report_progress("requesting_model")
                 turn = self.model_client.planning_turn(
                     messages,
-                    tool_definitions,
-                    response_format=PLANNING_RESPONSE_FORMAT,
+                    [] if final_response_requested else tool_definitions,
+                    response_format=(
+                        PLANNING_RESPONSE_FORMAT if final_response_requested else None
+                    ),
                 )
                 calls = turn.get("tool_calls", [])
                 if calls:
@@ -479,6 +482,7 @@ class PlanningAgent:
                                     {"type": "image_url", "image_url": {"url": image_data_url}},
                                 ],
                             })
+                    final_response_requested = True
                     continue
                 content = turn.get("content")
                 if not isinstance(content, str):

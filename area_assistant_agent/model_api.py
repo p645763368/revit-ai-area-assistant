@@ -230,10 +230,11 @@ class OpenAICompatibleClient:
         body_value = {
             "model": self._config.model,
             "messages": messages,
-            "tools": tools,
-            "tool_choice": "auto",
             "stream": False,
         }
+        if tools:
+            body_value["tools"] = tools
+            body_value["tool_choice"] = "auto"
         if response_format is not None:
             body_value["response_format"] = response_format
         body = json.dumps(body_value, ensure_ascii=False).encode("utf-8")
