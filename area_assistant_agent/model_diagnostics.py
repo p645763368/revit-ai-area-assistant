@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
+from .model_protocol import is_chat_completion_shape_summary
+
 
 def persist_model_diagnostic(
     session_directory: Path,
@@ -14,6 +16,8 @@ def persist_model_diagnostic(
     shape: Dict[str, Any],
 ) -> Path:
     """Append one structural diagnostic record below the canonical session."""
+    if not is_chat_completion_shape_summary(shape):
+        raise ValueError("shape must be a value-free chat completion summary")
     diagnostics_directory = Path(session_directory).resolve() / "model_diagnostics"
     diagnostics_directory.mkdir(parents=True, exist_ok=True)
     path = diagnostics_directory / "protocol.jsonl"

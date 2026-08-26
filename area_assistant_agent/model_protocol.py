@@ -20,6 +20,7 @@ _ALLOWED_SHAPE_KEYS = frozenset(
         "reasoning_content",
     }
 )
+_SHAPE_TYPE_NAMES = frozenset({"dict", "list", "str", "int", "float", "bool", "NoneType"})
 
 
 class ProtocolShapeError(Exception):
@@ -62,6 +63,64 @@ def _summarize_value(value: Any) -> Dict[str, Any]:
             "first_item": _summarize_value(value[0]) if value else None,
         }
     return {"type": type(value).__name__}
+
+
+def is_chat_completion_shape_summary(shape: Any) -> bool:
+    """Return whether *shape* can only contain value-free shape metadata."""
+    if not isinstance(shape, dict) or set(shape) - {"top_level", "choices"}:
+        return False
+    if "top_level" not in shape or not _is_value_free_shape(shape["top_level"]):
+        return False
+    return "choices" not in shape or _is_value_free_shape(shape["choices"])
+
+
+def _is_value_free_shape(value: Any) -> bool:
+    if not isinstance(value, dict) or not isinstance(value.get("type"), str):
+        return False
+    value_type = value["type"]
+    if value_type not in _SHAPE_TYPE_NAMES:
+        return False
+    if value_type == "dict":
+        allowed = {"type", "keys", "unknown_key_count", "fields"}
+        if set(value) - allowed or not {"keys", "unknown_key_count"}.issubset(value):
+            return False
+        keys = value["keys"]
+        if (
+            not isinstance(keys, list)
+            or keys != sorted(set(keys))
+            or any(not isinstance(key, str) or key not in _ALLOWED_SHAPE_KEYS for key in keys)
+        ):
+            return False
+        if not _is_nonnegative_int(value["unknown_key_count"]):
+            return False
+        fields = value.get("fields", {})
+        return (
+            isinstance(fields, dict)
+            and set(fields) == set(keys)
+            and all(_is_value_free_shape(field) for field in fields.values())
+        )
+    if value_type == "list":
+        if set(value) != {"type", "count", "item_type_counts", "first_item"}:
+            return False
+        counts = value["item_type_counts"]
+        if not _is_nonnegative_int(value["count"]) or not isinstance(counts, dict):
+            return False
+        if any(
+            not isinstance(type_name, str)
+            or type_name not in _SHAPE_TYPE_NAMES
+            or not _is_nonnegative_int(count)
+            for type_name, count in counts.items()
+        ):
+            return False
+        first_item = value["first_item"]
+        return sum(counts.values()) == value["count"] and (
+            first_item is None if value["count"] == 0 else _is_value_free_shape(first_item)
+        )
+    return set(value) == {"type"}
+
+
+def _is_nonnegative_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _shape_error(payload: Any) -> ProtocolShapeError:
