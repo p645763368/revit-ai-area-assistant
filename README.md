@@ -1,177 +1,109 @@
 # Revit AI Area Assistant
 
-这是一个面向 Autodesk Revit 2026 的AI辅助面积计算Demo。项目使用pyRevit提供Revit内嵌界面，本地Python Agent负责AI对话与任务编排，rvt-mcp负责读取和操作Revit模型。
+面向 Autodesk Revit 2026 的 AI 面积助手。
 
-## 从这里开始
+## 最高原则
 
-- [非专业开发人员双人Codex协同开发指南](docs/非专业开发人员双人Codex协同开发指南.md)
-- [Issue #5 外部状态、日志与会话恢复人工测试手册](docs/Issue-5-外部状态日志与会话恢复-人工测试手册.md)
-- [PR #17 / Issue #5 剩余人工验收操作手册](docs/Issue-5-PR17-剩余人工验收操作手册.md)
-- [PR #17 / Issue #5 人工验收记录（2026-08-14）](docs/Issue-5-PR17-人工验收记录-2026-08-14.md)
-- [Issue #5 人工测试记录（2026-08-13）](docs/Issue-5-人工测试记录-2026-08-13.md)
-- [Issue #7 Revit 2026 人工测试手册](docs/issue-7-revit-manual-test.md)
-- [产品与技术规格 Issue #1](https://github.com/p645763368/revit-ai-area-assistant/issues/1)
-- [全部开发任务](https://github.com/p645763368/revit-ai-area-assistant/issues)
+- **简单且有效。**
+- 只实现真实工作流需要的最短可靠路径。
+- 不用测试数量、复杂状态机或兼容层制造“已经可用”的假象。
+- 没有完成 Revit 2026 实机验证的功能必须明确标记为未完成。
 
-工程骨架 [Issue #2](https://github.com/p645763368/revit-ai-area-assistant/issues/2) 以及 Issue #7 的阻塞项 [#3](https://github.com/p645763368/revit-ai-area-assistant/issues/3)、[#4](https://github.com/p645763368/revit-ai-area-assistant/issues/4)、[#5](https://github.com/p645763368/revit-ai-area-assistant/issues/5) 已合并到 `main`。
+## 当前架构
 
-> 安全提醒：禁止向GitHub提交RVT文件、API密钥、项目截图、运行日志或真实项目数据。
+```text
+Revit 2026 C#/.NET 8 WPF Add-in
+        │ localhost HTTP
+        ▼
+Python Agent
+        ├─ DeepSeek API
+        └─ rvt-mcp 只读证据
+```
 
-## 工程结构
+旧的 Python 脚本化 Revit 前端已经被彻底抛弃，不再是项目依赖，也不再接受修复或扩展。
 
-- `pyrevit/AI Area Assistant.extension/`：注册并打开Revit内的Dockable Pane。
-- `area_assistant_pyrevit/`：面板、回环客户端和Agent进程启动器。
-- `area_assistant_agent/`：独立CPython Agent和OpenAI兼容模型API适配器。
-- `contracts/v1/`：pyRevit、Agent与后续rvt-mcp集成共享的版本化JSON契约。
-- `knowledge/`：经批准、匿名化且可跨项目复用的规则与案例边界。
-- `tests/`：不依赖Revit的用户可见入口、契约和安全边界测试。
-- `.github/workflows/ci.yml`：在Windows上执行编译检查与自动测试。
+C# Add-in 负责 Ribbon、Dockable Pane、当前文档与选择、ExternalEvent、直接 Revit API，以及后续 Issue 中的 Transaction/TransactionGroup。
 
-## 本地运行
+Python Agent 负责 DeepSeek、规划、知识、会话与持久 Job、rvt-mcp 只读证据、结果验证和安全诊断。
 
-需要Python 3.9或更高版本。在仓库根目录执行：
+## 当前真实状态
+
+已经完成并真实验证：
+
+- Python Agent loopback HTTP 服务；
+- DeepSeek 严格工具调用；
+- DeepSeek 官方 JSON Output：`response_format={"type":"json_object"}`；
+- 工具阶段与最终 JSON 阶段分离；
+- 持久规划 Job；
+- 一次真实只读 Job 到达 `completed / finished` 并返回 3 个方案；
+- 该次测试中 Revit 保持 `IsModified: False`。
+
+尚未完成：
+
+- Revit 2026 C# Add-in、Dockable Pane、自动启动 Agent；
+- C# 元素选择、Job 查询和方案展示；
+- 任何 Revit 写入功能。
+
+不要把 Python Agent 已完成描述成整个 Revit 插件已经可用。
+
+## 目录
+
+- `area_assistant_agent/`：本地 Python Agent。
+- `contracts/v1/`：C# Add-in、Python Agent 与只读证据接口共享的 JSON 契约。
+- `knowledge/`：版本化面积规则和案例知识。
+- `revit_addin/`：Revit 2026 C# Add-in，按实施计划创建。
+- `docs/superpowers/specs/2026-08-26-csharp-revit-frontend-design.md`：权威架构规格。
+- `docs/superpowers/plans/2026-08-26-csharp-revit-frontend.md`：当前实施计划。
+- `tests/`：Python Agent 与契约测试。
+
+## Python Agent
+
+需要 Python 3.10 或更高版本。
+
+用户级环境变量：
+
+```text
+AI_AREA_ASSISTANT_BASE_URL=https://api.deepseek.com
+AI_AREA_ASSISTANT_MODEL=deepseek-v4-flash
+AI_AREA_ASSISTANT_API_KEY=<local secret>
+AI_AREA_ASSISTANT_PORT=8765
+AI_AREA_ASSISTANT_TIMEOUT_SECONDS=30
+```
+
+API Key 只能通过本机安全配置注入，不得写入源码、文档、日志、测试数据、RVT 或 DLL。
+
+启动与健康检查：
+
+```powershell
+python -m area_assistant_agent --serve
+Invoke-RestMethod http://127.0.0.1:8765/health
+```
+
+## DeepSeek JSON 规则
+
+- 最终请求使用 `{"type":"json_object"}`；
+- 提示词明确要求 JSON 并给出结构示例；
+- Agent 本地验证 `summary`、`question` 和 2–4 个 `options`；
+- 必须恰好一个 `recommended`；
+- HTTP、协议或验证失败不得自动重新发送模型请求。
+
+## 开发验证
 
 ```powershell
 python -m pip install -e ".[test]"
-python -m area_assistant_agent --check
 python -m unittest discover -s tests -v
+python -m compileall -q area_assistant_agent scripts tests
+python scripts/check_repository_safety.py
 ```
 
-Agent就绪检查应输出`status: ready`和`contract_version: 1.0`；`--check`本身不会连接模型API。`--serve`提供本机AI对话、会话与只读规划服务；只有用户在已验证文档会话中明确启动规划时，规划服务才会调用rvt-mcp读取Revit或截取辅助证据，不执行Revit模型写入。
+C# 只针对 Revit 2026、.NET 8 和 x64。具体步骤见当前 C# 实施计划。
 
-本阶段的生产验证目标固定为 DeepSeek。启动 Agent 服务前，在用户级环境变量中显式配置以下两个值；不要依赖代码中的旧 Demo 默认值：
+## 后续 Issue 的强制边界
 
-```powershell
-[Environment]::SetEnvironmentVariable(
-  "AI_AREA_ASSISTANT_BASE_URL",
-  "https://api.deepseek.com",
-  "User"
-)
-[Environment]::SetEnvironmentVariable(
-  "AI_AREA_ASSISTANT_MODEL",
-  "deepseek-v4-flash",
-  "User"
-)
-```
-
-`AI_AREA_ASSISTANT_API_KEY` 只允许通过本机安全渠道写入用户级环境变量；真实值不得显示在终端输出，不得写入 PowerShell 脚本、`.env`、README、测试 fixture、日志、诊断或仓库文件。Agent 在进程启动时读取一次模型配置，因此修改上述用户级环境变量后，必须完全停止旧 Agent 进程并重新启动 Agent；执行 live provider 或 Revit 验证前还必须完全退出并重启 Revit/pyRevit，再先通过 `/health` 和 `/v1/health`，不能把运行中进程视为已加载新配置。
-
-`AI_AREA_ASSISTANT_PORT` 默认是 `8765`，模型请求超时默认 30 秒并可通过 `AI_AREA_ASSISTANT_TIMEOUT_SECONDS` 调整。pyRevit 规划轮询使用独立短请求，不把一次轮询超时当作规划失败。面板自动启动 Agent 时会查找当前 CPython、`py` 或 `python`；若未找到，请把 Python 3.9 或更高版本解释器的完整路径写入用户级 `AI_AREA_ASSISTANT_PYTHON` 环境变量。
-
-### 模型协议网关安全行为
-
-- 规划工具仅暴露只读函数；每个函数使用严格、禁止额外字段的参数 schema。最终方案使用 `response_format.type = json_schema`，只接受非空 `summary`、非空 `question` 和 2–4 个完整选项，并继续由本地校验保证恰好一个推荐项。未知内容块、缺失消息、畸形工具调用、非对象参数或 reasoning-only 结果均 fail closed 为 `model_protocol_error`。
-- 协议失败的本地记录位于当前会话目录 `AI_Area_Assistant_Data/documents/<document-key>/sessions/<session-id>/model_diagnostics/protocol.jsonl`。每条仅允许时间、任务/诊断标识和 provider 响应的结构元数据（受控键名、类型、计数）；不得包含 API key/Authorization、prompt/对话、模型 content/reasoning、工具名称或参数值、Revit 元素/几何/截图、文档路径/指纹或 provider 原始响应体。
-- HTTP、连接、超时、协议或结果校验失败都不会自动发送另一条模型请求。状态轮询只能查询同一个 `job_id`；终态后的重新提交必须由用户明确确认并操作。任何 live provider 探针和任何 live Revit“扫描与方案”还需要两次彼此独立的授权，不能合并授权或自动衔接。
-
-pyRevit面板使用6.5.3默认的IronPython Forms后端；模型API请求始终由独立的现代CPython Agent执行。不要给扩展的`startup.py`或按钮脚本添加`#! python3`，因为当前pyRevit CPython Forms后端不提供Dockable Pane API。
-
-若Windows中的`python`命中了Microsoft Store占位程序，请使用已安装Python解释器的完整路径执行相同命令。
-
-## pyRevit最小入口
-
-1. 在pyRevit中把`pyrevit/AI Area Assistant.extension`配置为扩展目录。
-2. 重新加载pyRevit。
-3. 打开`AI Area Assistant`选项卡，点击`AI Area Assistant`按钮。
-4. 应在Revit右侧打开“AI Area Assistant”面板，先显示“连接中”，然后显示“已连接”。
-5. 面板应显示当前Revit实例、完整文档路径、活动视图、`IsModified`和安全绑定状态。
-6. 输入一条消息并点击“发送”，回复应逐段显示在面板中。
-7. 暂时断开模型服务或配置无效模型后再次发送，Revit应保持可操作，面板应显示错误；可重试错误会启用“重试”。
-
-此人工检查不修改或保存RVT。
-
-## 文档安全绑定
-
-Issue #4新增两层只读安全检查：
-
-- pyRevit入口读取当前进程、文档完整路径、活动视图、修改状态和文档指纹。
-- 本地Agent将pyRevit快照与rvt-mcp独立读取的Revit进程、文档标题、完整路径、项目身份、活动视图和修改状态交叉验证，并把任务绑定到一个实例和一个文档。任何证据冲突都会暂停任务并撤销写入许可。
-
-指定开发测试副本的完整路径只通过用户级环境变量提供，不写入仓库：
-
-```powershell
-[Environment]::SetEnvironmentVariable(
-  "AI_AREA_ASSISTANT_TEST_DOCUMENT",
-  "<开发测试副本的绝对路径>",
-  "User"
-)
-```
-
-设置后需完全退出并重新启动Revit。路径匹配只是候选授权；只有Agent确认pyRevit与rvt-mcp读取的实例、文档、活动视图和修改状态全部一致后，`write_allowed`才会为`true`。未保存文档、其他模型、原模型、切换后的文档以及任何rvt-mcp证据不一致时始终拒绝写入。
-
-文档切换触发的暂停锁在当前Revit进程内不会自动恢复，切回授权副本或执行pyRevit `Reload`也仍保持拒绝写入。Issue #4尚未提供“开始新任务”交互；人工测试若需重新绑定，必须完全退出并重新启动Revit。后续面板Ticket可以在明确的用户操作下提供新任务/重新绑定入口。
-
-pyRevit通过独立CPython运行Agent，需要配置解释器路径：
-
-```powershell
-[Environment]::SetEnvironmentVariable(
-  "AI_AREA_ASSISTANT_PYTHON",
-  "<现代CPython的python.exe绝对路径>",
-  "User"
-)
-```
-
-Agent会优先使用`AI_AREA_ASSISTANT_RVT_MCP_COMMAND`指定的rvt-mcp服务命令；未设置时，从`%LOCALAPPDATA%\RvtMcp\rvt\server\`自动选择已安装服务。打开面板后，“文档安全状态”卡片会自动在后台运行rvt-mcp交叉验证；也可点击“验证文档”重新检查。验证期间Revit界面保持可操作，卡片先显示“验证中”，最长约50秒后显示最终结果；超时或失败时始终保持拒绝写入。切换活动文档会立即触发重新验证和暂停锁，不需要再次点击功能区按钮。
-
-Revit 2026人工验收步骤见[`docs/issue-4-revit-manual-test.md`](docs/issue-4-revit-manual-test.md)。
-
-## 边界来源选择与定位
-
-Issue #6在Dockable Pane中增加“边界来源选择”卡片：
-
-- “读取当前选择”读取Revit中已经选中的元素，并只保留Floor、Roof和Wall。
-- “交互式选择”进入Revit多选模式；按`Esc`安全取消并保留上一次有效选择。
-- 面板显示Element ID、UniqueId、类别、关联楼层、类型和包围盒尺寸摘要。
-- “定位高亮”仅更新Revit当前UI选择集并缩放定位，不启动Transaction、不创建永久模型成果。
-- “交给Agent分析”通过既有`chat.stream`文本消息发送摘要，不修改共享v1契约，也不执行模型写入。
-
-切换活动文档会清空缓存的来源元素，避免把旧文档Element ID用于新文档。Revit 2026人工验收步骤见[`docs/issue-6-revit-manual-test.md`](docs/issue-6-revit-manual-test.md)。
-
-## 共享契约
-
-公共契约说明见[`contracts/README.md`](contracts/README.md)。后续并行任务必须复用`contracts/v1`信封；任何不兼容变化都需要新主版本并在PR中说明影响。
-
-Issue #7 在不改变 v1 信封的前提下新增兼容 action `analysis.plan`。面板的“扫描与方案”按钮会在当前已验证文档和已激活会话内启动只读规划：Agent 加载 `knowledge/rules` 与 `knowledge/cases` 中带版本、来源和适用范围的快照，自主选择固定只读模型查询，并在需要时调用 rvt-mcp `capture_view_image`。截图通过 rvt-mcp 允许的临时目录中转并在 `finally` 中清理，持久副本只保存在忽略的当前会话数据目录；截图只是视觉辅助，边界判断仍须由 Revit 曲线环、墙定位曲线和现有 Area Boundary 曲线复核。
-
-规划结果固定返回 2 至 4 个可点击选项，恰好一个推荐项，每项显示依据和影响。用户既可点击选项，也可在原输入框自由说明；两者都会通过同一文档会话的历史继续规划。该功能不创建 Transaction、不修改模型、不自动保存 RVT。真实模型 API 与 Revit 2026 验收步骤见 [`docs/issue-7-revit-manual-test.md`](docs/issue-7-revit-manual-test.md)。
-
-### 可恢复的规划任务
-
-规划按钮使用兼容的 v1 任务接口，不改变既有 `contract_version: "1.0"` 信封：
-
-- `POST /v1/plan-jobs` 使用 `analysis.plan.submit` 提交；相同会话、文档、面板代次和规范化消息会返回同一个任务，首次创建返回 HTTP 202，去重命中返回 HTTP 200。
-- `GET /v1/plan-jobs/{job_id}` 使用 URL 查询参数携带 `project_directory`、`panel_instance_id`、`generation`、`context_id`、`document_fingerprint` 和 `session_id` 轮询同一任务。
-- `POST /v1/plan-jobs/{job_id}/cancel` 使用 `analysis.plan.cancel` 取消；对同一任务重复取消安全且幂等。
-
-公开快照包含 `job_id`、`state`、`stage`、创建/更新时间，以及互斥的 `result` 或 `error`。`queued`、`running` 为非终态；`completed`、`failed`、`cancelled`、`interrupted` 为终态。`stage` 仅表示当前真实活动（如读取模型、请求模型或保存结果），模型工具循环可在这些阶段间往返，调用方不得假设固定阶段顺序。`completed` 必须带结构化方案；`failed` 和 `interrupted` 必须带安全的 `{code, message, retryable}` 错误，并可选带只用于关联本地结构诊断的 `diagnostic_id`；其余状态的 `result` 与 `error` 均为 `null`。
-
-一次轮询的网络超时不代表任务失败：面板会保留原 `job_id`、显示等待/重连状态并重新查询，绝不因此提交新的付费规划。Agent 重启时未完成任务会以 `interrupted` 返回，用户可在确认后点击“重试”发出一次明确的 `retry_terminal: true`；自动的传输恢复始终使用 `false`，因此不会擅自重放终态任务。
-
-人工 Revit 验收应在指定测试副本且不保存的前提下完成：将规划器延迟设为旧请求超时以上，确认面板保持运行/等待、Agent 只执行一次规划且最后显示结构化选项；再强制一次轮询失败并连续点击按钮，确认同一 `job_id` 最终完成、没有重复模型请求。完整的无写入检查继续以 [`docs/issue-7-revit-manual-test.md`](docs/issue-7-revit-manual-test.md) 为准。
-
-## 本地数据和凭据
-
-本仓库只保存代码、匿名示例和文档。`.gitignore`阻止常见RVT、凭据、日志、截图和`AI_Area_Assistant_Data`进入Git，但提交前仍必须人工检查暂存文件。真实API密钥只能通过用户级环境变量或安全凭据提供。
-
-Issue #5提供了外部会话持久化接口。数据根目录固定为项目目录下的`AI_Area_Assistant_Data`，并在运行时解析为绝对路径。可在仓库根目录查看当前项目解析后的路径：
-
-```powershell
-python -m area_assistant_agent --show-data-root .
-```
-
-输出示例为`{"data_root": "D:\\path\\to\\project\\AI_Area_Assistant_Data"}`。运行数据按文档指纹的SHA-256目录键隔离，结构如下：
-
-```text
-AI_Area_Assistant_Data/
-└── documents/<document-key>/sessions/<session-id>/
-    ├── state.json
-    ├── conversation.jsonl
-    ├── operations.jsonl
-    ├── agent.log.jsonl
-    └── session.md
-```
-
-`SessionRepository.recovery_prompt()`只列出当前文档可恢复且状态文件完整的会话；单个损坏的`state.json`会被隔离，不会阻断其他候选。正式Dockable Pane在文档验证后显示“继续上次会话”或“新建会话”，选择前不创建、恢复或写入任何会话。用户明确选择继续后，恢复状态为`awaiting_user_action`，不会重放旧的模型操作。对话内容以及工具输入、输出和错误写入记录前会递归遮蔽Authorization、API密钥、Token、Secret和Password字段。
-
-切换活动文档时，面板会立即撤销旧会话的发送和写入资格，重新读取当前文档指纹并要求用户为当前文档重新选择会话。面板和Agent通过`contracts/v1`版本化请求共同校验会话上下文；旧文档的迟到回复不能写入旧目录。本功能不读取、修改或保存RVT。
+- Issue #8–#13 使用 C# 执行 Revit API 交互和事务。
+- Python Agent 只输出计划、判断、状态和安全诊断。
+- 不恢复旧前端，不迁移旧面板代码。
+- 不做跨 Revit 版本兼容。
+- 不自动重试可能付费的模型请求。
+- 没有用户明确授权时，不执行 Revit 写入或真实模型请求。
 

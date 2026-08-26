@@ -675,7 +675,7 @@ Beijing Flower_梁亚鹏 - 开发测试副本_detached.rvt
 - 临时捕获文件；
 - `AI_Area_Assistant_Data`项目状态目录；
 - Python虚拟环境；
-- pyRevit缓存；
+- Revit Add-in构建输出与缓存；
 - 任何包含业主、项目或人员敏感信息的文件。
 
 如果发现密钥已经提交：

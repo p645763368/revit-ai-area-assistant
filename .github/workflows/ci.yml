@@ -18,7 +18,7 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install -e ".[test]"
       - name: Compile Python sources
-        run: python -m compileall -q area_assistant_agent pyrevit scripts tests
+        run: python -m compileall -q area_assistant_agent scripts tests
       - name: Check repository safety
         run: python scripts/check_repository_safety.py
       - name: Run tests

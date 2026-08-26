@@ -1,4 +1,4 @@
-"""One-shot Agent runtime joining pyRevit identity with live rvt-mcp evidence."""
+"""Join a Revit frontend document snapshot with live rvt-mcp evidence."""
 
 from typing import Any, Optional
 
@@ -21,7 +21,7 @@ def document_snapshot_from_payload(payload: dict) -> DocumentSnapshot:
             is_modified=bool(payload["is_modified"]),
         )
     except (KeyError, TypeError) as error:
-        raise ValueError("pyRevit document snapshot is incomplete") from error
+        raise ValueError("Revit frontend document snapshot is incomplete") from error
 
 
 def resolve_document_status(

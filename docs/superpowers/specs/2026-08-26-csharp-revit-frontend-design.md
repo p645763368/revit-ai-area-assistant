@@ -15,7 +15,7 @@ in the current Revit 2026 workflow requires it.
 
 ## Goal
 
-Replace the pyRevit/IronPython pane with a small Revit 2026 C# add-in while
+Build a small Revit 2026 C# add-in while
 keeping the existing Python Agent and DeepSeek integration. The first release
 must complete one reliable read-only path: select a boundary source, submit one
 planning job, wait for that same job, and display the structured options.
@@ -53,7 +53,7 @@ The existing Agent remains responsible for:
 - local validation of the final plan;
 - safe diagnostics and the no-automatic-resubmit rule.
 
-The existing pyRevit pane is abandoned and is not part of the new runtime path.
+The deleted legacy pane is not part of the new runtime path.
 
 ## Startup
 
@@ -109,13 +109,13 @@ The pane contains only:
 - general chat and a Send button;
 - automatic retry of model requests;
 - Area creation or any other Revit model write;
-- migration of the existing pyRevit UI implementation;
+- migration of the deleted legacy UI implementation;
 - installers, auto-update, telemetry, and multi-user deployment.
 
 ## Acceptance criteria
 
-1. Revit 2026 loads the add-in and opens its dockable pane without a pyRevit
-   dependency.
+1. Revit 2026 loads the add-in and opens its dockable pane using only the C#
+   runtime path.
 2. Opening the pane reuses a healthy Agent or starts it and reports readiness.
 3. A selected Wall can be read and submitted once for planning.
 4. The pane observes the returned job through one terminal state and displays a

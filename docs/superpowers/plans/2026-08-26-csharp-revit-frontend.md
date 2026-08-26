@@ -22,8 +22,7 @@
 - C# never reads the DeepSeek key or calls DeepSeek.
 - Read-only: never open a Revit Transaction.
 - One click creates at most one planning POST; recovery may repeat GET for the same job only.
-- Do not migrate the pyRevit UI or add session replay, chat, Send, automatic model retry, installers, telemetry, or multi-version support.
-- Preserve unrelated dirty pyRevit launcher changes.
+- Do not migrate the deleted legacy UI or add session replay, chat, Send, automatic model retry, installers, telemetry, or multi-version support.
 
 ---
 
@@ -47,7 +46,7 @@
 - [ ] Step 2: Implement App.OnStartup with fixed pane GUID 42FC2674-60BC-4F90-ACAB-4BB20FC85F18, register the WPF page, and create one Ribbon button.
 - [ ] Step 3: Implement ShowPaneCommand to call UIApplication.GetDockablePane(id).Show().
 - [ ] Step 4: Create the minimal XAML: Agent status, document status, selection text, Read Current Selection, Scan and Plan, result list, and error text.
-- [ ] Step 5: Add a fixed .addin manifest for Application and Command; do not register pyRevit.
+- [ ] Step 5: Add a fixed .addin manifest for Application and Command.
 - [ ] Step 6: Run dotnet build revit_addin/AreaAssistant.Revit2026/AreaAssistant.Revit2026.csproj -c Debug and verify the DLL and WPF resources exist.
 - [ ] Step 7: Commit only revit_addin/AreaAssistant.Revit2026 with message feat: add Revit 2026 C# pane shell.
 
@@ -116,6 +115,6 @@
 - [ ] Step 3: On Scan, call SubmitOnceAsync once, disable Scan, and start a one-second WPF DispatcherTimer that calls RefreshAsync for the same job. Stop at terminal state. Never block the Revit UI thread.
 - [ ] Step 4: Render summary, question, and option cards; render safe terminal code/message. Do not add Retry or Send.
 - [ ] Step 5: Run dotnet test, Release build, the complete Python unittest discovery, repository safety, and git diff --check. Record exact results.
-- [ ] Step 6: Copy Release output and the manifest to %APPDATA%\Autodesk\Revit\Addins\2026\AreaAssistant. Disable the pyRevit extension for the manual run so only one UI registers.
+- [ ] Step 6: Copy Release output and the manifest to %APPDATA%\Autodesk\Revit\Addins\2026\AreaAssistant and confirm only the C# UI is registered.
 - [ ] Step 7: Stop and request authorization. Then run exactly one test in the detached RVT: record IsModified before, select one Wall, submit once, observe the same job to terminal state, record IsModified after, and do not save.
 - [ ] Step 8: Commit README, manual evidence, and add-in changes with message feat: complete Revit 2026 C# planning pane. Do not push or merge.
