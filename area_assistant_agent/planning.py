@@ -105,45 +105,7 @@ TOOL_DEFINITIONS = [
 ]
 
 
-PLANNING_RESPONSE_FORMAT: Dict[str, Any] = {
-    "type": "json_schema",
-    "json_schema": {
-        "name": "planning_result",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["summary", "question", "options"],
-            "properties": {
-                "summary": {"type": "string", "minLength": 1},
-                "question": {"type": "string", "minLength": 1},
-                "options": {
-                    "type": "array",
-                    "minItems": 2,
-                    "maxItems": 4,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": [
-                            "id",
-                            "label",
-                            "recommended",
-                            "rationale",
-                            "impact",
-                        ],
-                        "properties": {
-                            "id": {"type": "string", "minLength": 1},
-                            "label": {"type": "string", "minLength": 1},
-                            "recommended": {"type": "boolean"},
-                            "rationale": {"type": "string", "minLength": 1},
-                            "impact": {"type": "string", "minLength": 1},
-                        },
-                    },
-                },
-            },
-        },
-    },
-}
+PLANNING_RESPONSE_FORMAT: Dict[str, Any] = {"type": "json_object"}
 
 
 class KnowledgeCatalog:
@@ -338,8 +300,9 @@ class PlanningAgent:
                 "You are the read-only planning stage of a Revit GFA assistant. "
                 "Use tools whenever model evidence or a screenshot is needed. Screenshots are supporting evidence only; geometry queries remain authoritative. "
                 "If screenshot capture is unavailable, do not retry it in the same plan; continue from structured geometry and clearly state the visual-evidence limitation. "
-                "Never propose a final regulatory factor without user confirmation. Return only JSON with summary, question, and 2-4 options. "
-                "Exactly one option must be recommended; every option needs id, label, recommended, rationale, and impact.\nKnowledge:\n"
+                "Never propose a final regulatory factor without user confirmation. Return only JSON. "
+                "Use this exact shape: {\"summary\":\"...\",\"question\":\"...\",\"options\":[{\"id\":\"...\",\"label\":\"...\",\"recommended\":true,\"rationale\":\"...\",\"impact\":\"...\"}]}. "
+                "Return 2-4 options and mark exactly one as recommended.\nKnowledge:\n"
                 + json.dumps(knowledge, ensure_ascii=False)
             ),
         }] + list(conversation)

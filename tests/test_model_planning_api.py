@@ -96,11 +96,7 @@ class ModelPlanningApiTests(unittest.TestCase):
 
             self.assertNotIn("tools", server.received)
             self.assertNotIn("tool_choice", server.received)
-            self.assertEqual(server.received["response_format"]["type"], "json_schema")
-            schema = server.received["response_format"]["json_schema"]["schema"]
-            self.assertFalse(schema["additionalProperties"])
-            self.assertEqual(schema["properties"]["options"]["minItems"], 2)
-            self.assertEqual(schema["properties"]["options"]["maxItems"], 4)
+            self.assertEqual(server.received["response_format"], {"type": "json_object"})
         finally:
             server.shutdown()
             server.server_close()

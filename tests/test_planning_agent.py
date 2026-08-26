@@ -160,6 +160,12 @@ class PlanningAgentTests(unittest.TestCase):
                     model.response_formats,
                     [None, PLANNING_RESPONSE_FORMAT],
                 )
+                prompt = model.requests[0][0][0]["content"]
+                self.assertIn("JSON", prompt)
+                self.assertIn('"summary"', prompt)
+                self.assertIn('"question"', prompt)
+                self.assertIn('"options"', prompt)
+                self.assertIn('"recommended"', prompt)
 
     def test_agent_can_inspect_and_capture_before_returning_structured_options(self):
         model = _ScriptedModel(
