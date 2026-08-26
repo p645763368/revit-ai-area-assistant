@@ -39,16 +39,30 @@ python -m unittest discover -s tests -v
 
 Agent就绪检查应输出`status: ready`和`contract_version: 1.0`；`--check`本身不会连接模型API。`--serve`提供本机AI对话、会话与只读规划服务；只有用户在已验证文档会话中明确启动规划时，规划服务才会调用rvt-mcp读取Revit或截取辅助证据，不执行Revit模型写入。
 
-启动Agent服务前，在用户级环境变量中配置：
+本阶段的生产验证目标固定为 DeepSeek。启动 Agent 服务前，在用户级环境变量中显式配置以下两个值；不要依赖代码中的旧 Demo 默认值：
 
 ```powershell
-$env:AI_AREA_ASSISTANT_API_KEY = Read-Host "请输入通过安全渠道取得的密钥"
-$env:AI_AREA_ASSISTANT_MODEL = "<兼容服务提供的模型名称>"
-$env:AI_AREA_ASSISTANT_BASE_URL = "https://api.fe8.cn/v1"
-python -m area_assistant_agent --serve
+[Environment]::SetEnvironmentVariable(
+  "AI_AREA_ASSISTANT_BASE_URL",
+  "https://api.deepseek.com",
+  "User"
+)
+[Environment]::SetEnvironmentVariable(
+  "AI_AREA_ASSISTANT_MODEL",
+  "deepseek-v4-flash",
+  "User"
+)
 ```
 
-`AI_AREA_ASSISTANT_BASE_URL`默认使用上面的Demo中转地址，`AI_AREA_ASSISTANT_PORT`默认是`8765`，模型请求超时默认30秒并可通过`AI_AREA_ASSISTANT_TIMEOUT_SECONDS`调整。pyRevit规划请求读取同一变量，并在模型超时基础上增加15秒传输余量；health、文档验证和普通会话请求仍使用独立短超时。规划客户端若真正超时，会提示任务可能仍在Agent运行并阻止本会话立即重复提交，避免重复计费。面板自动启动Agent时会查找当前CPython、`py`或`python`；若未找到，请把Python 3.9或更高版本解释器的完整路径写入用户级`AI_AREA_ASSISTANT_PYTHON`环境变量。真实API密钥不要写入PowerShell脚本、`.env`、README或仓库文件。
+`AI_AREA_ASSISTANT_API_KEY` 只允许通过本机安全渠道写入用户级环境变量；真实值不得显示在终端输出，不得写入 PowerShell 脚本、`.env`、README、测试 fixture、日志、诊断或仓库文件。Agent 在进程启动时读取一次模型配置，因此修改上述用户级环境变量后，必须完全停止旧 Agent 进程并重新启动 Agent；执行 live provider 或 Revit 验证前还必须完全退出并重启 Revit/pyRevit，再先通过 `/health` 和 `/v1/health`，不能把运行中进程视为已加载新配置。
+
+`AI_AREA_ASSISTANT_PORT` 默认是 `8765`，模型请求超时默认 30 秒并可通过 `AI_AREA_ASSISTANT_TIMEOUT_SECONDS` 调整。pyRevit 规划轮询使用独立短请求，不把一次轮询超时当作规划失败。面板自动启动 Agent 时会查找当前 CPython、`py` 或 `python`；若未找到，请把 Python 3.9 或更高版本解释器的完整路径写入用户级 `AI_AREA_ASSISTANT_PYTHON` 环境变量。
+
+### 模型协议网关安全行为
+
+- 规划工具仅暴露只读函数；每个函数使用严格、禁止额外字段的参数 schema。最终方案使用 `response_format.type = json_schema`，只接受非空 `summary`、非空 `question` 和 2–4 个完整选项，并继续由本地校验保证恰好一个推荐项。未知内容块、缺失消息、畸形工具调用、非对象参数或 reasoning-only 结果均 fail closed 为 `model_protocol_error`。
+- 协议失败的本地记录位于当前会话目录 `AI_Area_Assistant_Data/documents/<document-key>/sessions/<session-id>/model_diagnostics/protocol.jsonl`。每条仅允许时间、任务/诊断标识和 provider 响应的结构元数据（受控键名、类型、计数）；不得包含 API key/Authorization、prompt/对话、模型 content/reasoning、工具名称或参数值、Revit 元素/几何/截图、文档路径/指纹或 provider 原始响应体。
+- HTTP、连接、超时、协议或结果校验失败都不会自动发送另一条模型请求。状态轮询只能查询同一个 `job_id`；终态后的重新提交必须由用户明确确认并操作。任何 live provider 探针和任何 live Revit“扫描与方案”还需要两次彼此独立的授权，不能合并授权或自动衔接。
 
 pyRevit面板使用6.5.3默认的IronPython Forms后端；模型API请求始终由独立的现代CPython Agent执行。不要给扩展的`startup.py`或按钮脚本添加`#! python3`，因为当前pyRevit CPython Forms后端不提供Dockable Pane API。
 
@@ -129,7 +143,7 @@ Issue #7 在不改变 v1 信封的前提下新增兼容 action `analysis.plan`�
 - `GET /v1/plan-jobs/{job_id}` 使用 URL 查询参数携带 `project_directory`、`panel_instance_id`、`generation`、`context_id`、`document_fingerprint` 和 `session_id` 轮询同一任务。
 - `POST /v1/plan-jobs/{job_id}/cancel` 使用 `analysis.plan.cancel` 取消；对同一任务重复取消安全且幂等。
 
-公开快照包含 `job_id`、`state`、`stage`、创建/更新时间，以及互斥的 `result` 或 `error`。`queued`、`running` 为非终态；`completed`、`failed`、`cancelled`、`interrupted` 为终态。`stage` 仅表示当前真实活动（如读取模型、请求模型或保存结果），模型工具循环可在这些阶段间往返，调用方不得假设固定阶段顺序。`completed` 必须带结构化方案；`failed` 和 `interrupted` 必须带安全的 `{code, message, retryable}` 错误；其余状态的 `result` 与 `error` 均为 `null`。
+公开快照包含 `job_id`、`state`、`stage`、创建/更新时间，以及互斥的 `result` 或 `error`。`queued`、`running` 为非终态；`completed`、`failed`、`cancelled`、`interrupted` 为终态。`stage` 仅表示当前真实活动（如读取模型、请求模型或保存结果），模型工具循环可在这些阶段间往返，调用方不得假设固定阶段顺序。`completed` 必须带结构化方案；`failed` 和 `interrupted` 必须带安全的 `{code, message, retryable}` 错误，并可选带只用于关联本地结构诊断的 `diagnostic_id`；其余状态的 `result` 与 `error` 均为 `null`。
 
 一次轮询的网络超时不代表任务失败：面板会保留原 `job_id`、显示等待/重连状态并重新查询，绝不因此提交新的付费规划。Agent 重启时未完成任务会以 `interrupted` 返回，用户可在确认后点击“重试”发出一次明确的 `retry_terminal: true`；自动的传输恢复始终使用 `false`，因此不会擅自重放终态任务。
 
