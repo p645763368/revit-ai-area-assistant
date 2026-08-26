@@ -103,7 +103,7 @@ class OpenAICompatibleClient:
                 "model_unavailable", "Model API is unavailable.", retryable=True
             ) from exc
 
-    def planning_turn(self, messages, tools):
+    def planning_turn(self, messages, tools, response_format=None):
         """Return one normalized, non-streaming assistant/tool-call turn."""
         if not self._config.api_key or not self._config.model:
             raise ModelApiError(
@@ -111,16 +111,16 @@ class OpenAICompatibleClient:
                 "Model API credentials or model name are not configured.",
                 retryable=True,
             )
-        body = json.dumps(
-            {
-                "model": self._config.model,
-                "messages": messages,
-                "tools": tools,
-                "tool_choice": "auto",
-                "stream": False,
-            },
-            ensure_ascii=False,
-        ).encode("utf-8")
+        body_value = {
+            "model": self._config.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "stream": False,
+        }
+        if response_format is not None:
+            body_value["response_format"] = response_format
+        body = json.dumps(body_value, ensure_ascii=False).encode("utf-8")
         request = Request(
             self._config.base_url.rstrip("/") + "/chat/completions",
             data=body,

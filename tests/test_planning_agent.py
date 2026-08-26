@@ -8,6 +8,7 @@ import unittest
 from area_assistant_agent.planning import (
     KnowledgeCatalog,
     PlanningAgent,
+    PLANNING_RESPONSE_FORMAT,
     PlanningResult,
     READ_ONLY_QUERIES,
     ReadOnlyRevitTools,
@@ -23,9 +24,11 @@ class _ScriptedModel:
     def __init__(self, turns):
         self.turns = list(turns)
         self.requests = []
+        self.response_formats = []
 
-    def planning_turn(self, messages, tools):
+    def planning_turn(self, messages, tools, response_format=None):
         self.requests.append((copy.deepcopy(messages), copy.deepcopy(tools)))
+        self.response_formats.append(copy.deepcopy(response_format))
         return self.turns.pop(0)
 
 
@@ -88,6 +91,65 @@ class PlanningAgentTests(unittest.TestCase):
         self.assertEqual(snapshot["cases"][0]["version"], "1.0.0")
         self.assertIn("applicability", snapshot["rules"][0])
         self.assertNotIn("element_id", json.dumps(snapshot, ensure_ascii=False).lower())
+
+    def test_agent_passes_strict_schema_and_only_exposes_available_read_only_tools(self):
+        final = json.dumps(
+            {
+                "summary": "Model evidence was read.",
+                "question": "Which source should be used?",
+                "options": [
+                    {"id": "floor", "label": "Floor", "recommended": True, "rationale": "Complete outline.", "impact": "Use floor boundary."},
+                    {"id": "wall", "label": "Walls", "recommended": False, "rationale": "Cross-check only.", "impact": "Inspect wall joins."},
+                ],
+            }
+        )
+
+        for capture_available in (False, True):
+            with self.subTest(capture_available=capture_available):
+                class ConditionalCaptureClient(_McpClient):
+                    def list_tools(self):
+                        tools = super().list_tools()
+                        if not capture_available:
+                            tools.remove("capture_view_image")
+                        return tools
+
+                model = _ScriptedModel(
+                    [
+                        {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "read",
+                                    "name": "inspect_revit_model",
+                                    "arguments": {
+                                        "query": (
+                                            "overview"
+                                            if capture_available
+                                            else "boundary_candidates"
+                                        )
+                                    },
+                                }
+                            ],
+                        },
+                        {"content": final, "tool_calls": []},
+                    ]
+                )
+                with tempfile.TemporaryDirectory() as directory:
+                    PlanningAgent(model, KnowledgeCatalog(ROOT / "knowledge"), ConditionalCaptureClient).plan(
+                        [{"role": "user", "content": "scan"}], Path(directory), lambda *_: None
+                    )
+
+                expected_tools = ["inspect_revit_model"]
+                if capture_available:
+                    expected_tools.append("capture_revit_view")
+                self.assertEqual(
+                    [[item["function"]["name"] for item in tools] for _, tools in model.requests],
+                    [expected_tools, expected_tools],
+                )
+                self.assertEqual(
+                    model.response_formats,
+                    [PLANNING_RESPONSE_FORMAT, PLANNING_RESPONSE_FORMAT],
+                )
 
     def test_agent_can_inspect_and_capture_before_returning_structured_options(self):
         model = _ScriptedModel(
@@ -152,9 +214,9 @@ class PlanningAgentTests(unittest.TestCase):
         observed = []
 
         class TracingModel(_ScriptedModel):
-            def planning_turn(self, messages, tools):
+            def planning_turn(self, messages, tools, response_format=None):
                 observed.append("model_request")
-                return super().planning_turn(messages, tools)
+                return super().planning_turn(messages, tools, response_format)
 
         class TracingMcpClient(_McpClient):
             def call_tool(self, name, arguments):
@@ -254,7 +316,7 @@ class PlanningAgentTests(unittest.TestCase):
         outcomes = []
 
         class BlockingModel:
-            def planning_turn(self, messages, tools):
+            def planning_turn(self, messages, tools, response_format=None):
                 started.set()
                 if not release.wait(2):
                     raise RuntimeError("test did not release model request")

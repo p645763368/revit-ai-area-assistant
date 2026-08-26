@@ -78,6 +78,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "inspect_revit_model",
+            "strict": True,
             "description": "Read a fixed, non-mutating Revit model summary.",
             "parameters": {
                 "type": "object",
@@ -91,6 +92,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "capture_revit_view",
+            "strict": True,
             "description": "Capture a Revit view as read-only visual evidence.",
             "parameters": {
                 "type": "object",
@@ -100,6 +102,47 @@ TOOL_DEFINITIONS = [
         },
     },
 ]
+
+
+PLANNING_RESPONSE_FORMAT: Dict[str, Any] = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "planning_result",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["summary", "question", "options"],
+            "properties": {
+                "summary": {"type": "string", "minLength": 1},
+                "question": {"type": "string", "minLength": 1},
+                "options": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 4,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": [
+                            "id",
+                            "label",
+                            "recommended",
+                            "rationale",
+                            "impact",
+                        ],
+                        "properties": {
+                            "id": {"type": "string", "minLength": 1},
+                            "label": {"type": "string", "minLength": 1},
+                            "recommended": {"type": "boolean"},
+                            "rationale": {"type": "string", "minLength": 1},
+                            "impact": {"type": "string", "minLength": 1},
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
 
 
 class KnowledgeCatalog:
@@ -333,7 +376,11 @@ class PlanningAgent:
                 audit("capture_revit_view", {}, None, screenshot_failure)
             for _ in range(self.max_turns):
                 report_progress("requesting_model")
-                turn = self.model_client.planning_turn(messages, tool_definitions)
+                turn = self.model_client.planning_turn(
+                    messages,
+                    tool_definitions,
+                    response_format=PLANNING_RESPONSE_FORMAT,
+                )
                 calls = turn.get("tool_calls", [])
                 if calls:
                     messages.append(

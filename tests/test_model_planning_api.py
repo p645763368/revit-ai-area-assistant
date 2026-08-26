@@ -5,6 +5,7 @@ import unittest
 
 from area_assistant_agent.config import AgentConfig
 from area_assistant_agent.model_api import OpenAICompatibleClient
+from area_assistant_agent.planning import PLANNING_RESPONSE_FORMAT, TOOL_DEFINITIONS
 
 
 class _PlanningHandler(BaseHTTPRequestHandler):
@@ -59,13 +60,23 @@ class ModelPlanningApiTests(unittest.TestCase):
 
             result = client.planning_turn(
                 [{"role": "user", "content": "scan"}],
-                [{"type": "function", "function": {"name": "inspect_revit_model"}}],
+                TOOL_DEFINITIONS,
+                PLANNING_RESPONSE_FORMAT,
             )
 
             self.assertEqual(result["tool_calls"][0]["name"], "inspect_revit_model")
             self.assertEqual(result["tool_calls"][0]["arguments"], {"query": "levels"})
             self.assertFalse(server.received["stream"])
             self.assertEqual(server.received["tool_choice"], "auto")
+            self.assertEqual(server.received["response_format"]["type"], "json_schema")
+            schema = server.received["response_format"]["json_schema"]["schema"]
+            self.assertFalse(schema["additionalProperties"])
+            self.assertEqual(schema["properties"]["options"]["minItems"], 2)
+            self.assertEqual(schema["properties"]["options"]["maxItems"], 4)
+            self.assertTrue(server.received["tools"][0]["function"]["strict"])
+            self.assertFalse(
+                server.received["tools"][0]["function"]["parameters"]["additionalProperties"]
+            )
         finally:
             server.shutdown()
             server.server_close()
