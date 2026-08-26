@@ -1,5 +1,18 @@
 # C# Revit Frontend Design
 
+## Authoritative architecture decision
+
+The project has abandoned pyRevit as an application platform. No subsequent
+Issue may add to, repair, port, or depend on the pyRevit/IronPython pane,
+launcher, startup script, or polling implementation. Those files are legacy
+evidence only and are not part of the target product.
+
+“Simple and effective” is the highest design rule for this project. Every
+future change must implement the shortest reliable path required by the active
+Issue. Do not add compatibility layers, replay systems, generalized framework
+code, speculative recovery, or process ceremony unless a demonstrated failure
+in the current Revit 2026 workflow requires it.
+
 ## Goal
 
 Replace the pyRevit/IronPython pane with a small Revit 2026 C# add-in while
@@ -40,8 +53,7 @@ The existing Agent remains responsible for:
 - local validation of the final plan;
 - safe diagnostics and the no-automatic-resubmit rule.
 
-The existing pyRevit pane is not extended further and is not part of the new
-runtime path.
+The existing pyRevit pane is abandoned and is not part of the new runtime path.
 
 ## Startup
 
@@ -118,4 +130,3 @@ The pane contains only:
 - Build the add-in against the local Revit 2026 API assemblies.
 - Perform one separately authorized manual run in the detached test RVT.
 - Record the job ID, terminal state, and `IsModified` before and after.
-

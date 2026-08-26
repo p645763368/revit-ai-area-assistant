@@ -12,6 +12,11 @@
 
 ## Global Constraints
 
+- pyRevit/IronPython is abandoned. No task may repair, extend, migrate, or
+  depend on the old pane, launcher, startup script, or polling code.
+- “Simple and effective” is the highest implementation rule. Add only code
+  required for the current Revit 2026 acceptance path; reject speculative
+  abstraction, compatibility, recovery, and process layers.
 - Autodesk Revit 2026 only.
 - Reference C:\Program Files\Autodesk\Revit 2026\RevitAPI.dll and RevitAPIUI.dll with Private=false.
 - C# never reads the DeepSeek key or calls DeepSeek.
@@ -114,4 +119,3 @@
 - [ ] Step 6: Copy Release output and the manifest to %APPDATA%\Autodesk\Revit\Addins\2026\AreaAssistant. Disable the pyRevit extension for the manual run so only one UI registers.
 - [ ] Step 7: Stop and request authorization. Then run exactly one test in the detached RVT: record IsModified before, select one Wall, submit once, observe the same job to terminal state, record IsModified after, and do not save.
 - [ ] Step 8: Commit README, manual evidence, and add-in changes with message feat: complete Revit 2026 C# planning pane. Do not push or merge.
-
