@@ -4,6 +4,24 @@ import json
 from typing import Any, Dict
 
 
+_ALLOWED_SHAPE_KEYS = frozenset(
+    {
+        "id",
+        "object",
+        "choices",
+        "message",
+        "content",
+        "tool_calls",
+        "function_call",
+        "function",
+        "arguments",
+        "finish_reason",
+        "usage",
+        "reasoning_content",
+    }
+)
+
+
 class ProtocolShapeError(Exception):
     def __init__(self, shape: Dict[str, Any]):
         super().__init__("provider response shape is incompatible")
@@ -11,26 +29,39 @@ class ProtocolShapeError(Exception):
 
 
 def summarize_chat_completion_shape(payload: Any) -> Dict[str, Any]:
-    """Return structural metadata without copying provider content."""
-    if not isinstance(payload, dict):
-        return {"payload_type": type(payload).__name__}
-    choices = payload.get("choices")
-    summary: Dict[str, Any] = {
-        "payload_type": "dict",
-        "keys": sorted(str(key) for key in payload.keys()),
-        "choices_type": type(choices).__name__,
-    }
-    if isinstance(choices, list):
-        summary["choices_length"] = len(choices)
-        if choices and isinstance(choices[0], dict):
-            summary["choice_keys"] = sorted(str(key) for key in choices[0].keys())
-            message = choices[0].get("message")
-            summary["message_type"] = type(message).__name__
-            if isinstance(message, dict):
-                summary["message_keys"] = sorted(str(key) for key in message.keys())
-                content = message.get("content")
-                summary["content_type"] = type(content).__name__
+    """Return an allowlisted structural summary without provider values."""
+    summary: Dict[str, Any] = {"top_level": _summarize_value(payload)}
+    if isinstance(payload, dict) and "choices" in payload:
+        summary["choices"] = _summarize_value(payload["choices"])
     return summary
+
+
+def _summarize_value(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        allowed_keys = sorted(
+            key for key in value if isinstance(key, str) and key in _ALLOWED_SHAPE_KEYS
+        )
+        summary: Dict[str, Any] = {
+            "type": "dict",
+            "keys": allowed_keys,
+            "unknown_key_count": len(value) - len(allowed_keys),
+        }
+        fields = {key: _summarize_value(value[key]) for key in allowed_keys}
+        if fields:
+            summary["fields"] = fields
+        return summary
+    if isinstance(value, list):
+        item_type_counts: Dict[str, int] = {}
+        for item in value:
+            item_type = type(item).__name__
+            item_type_counts[item_type] = item_type_counts.get(item_type, 0) + 1
+        return {
+            "type": "list",
+            "count": len(value),
+            "item_type_counts": item_type_counts,
+            "first_item": _summarize_value(value[0]) if value else None,
+        }
+    return {"type": type(value).__name__}
 
 
 def _shape_error(payload: Any) -> ProtocolShapeError:

@@ -170,6 +170,25 @@ class SharedContractExamplesTests(unittest.TestCase):
             {"completed", "failed", "cancelled", "interrupted"}.issubset(states)
         )
 
+    def test_planning_job_status_rejects_diagnostic_id_with_whitespace(self):
+        registry = action_contract_registry()
+        actions = CONTRACTS / "actions"
+        examples = json.loads(
+            (actions / "examples" / "planning-job-status.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        failed = next(
+            example for example in examples if example["payload"]["state"] == "failed"
+        )
+        failed["payload"]["error"]["diagnostic_id"] = "invalid diagnostic"
+        schema = json.loads(
+            (actions / "planning-job-status.schema.json").read_text(encoding="utf-8")
+        )
+
+        with self.assertRaises(ValidationError):
+            Draft202012Validator(schema, registry=registry).validate(failed)
+
     def test_planning_job_submit_response_keeps_accepted_status_for_deduplicated_terminal_job(self):
         """Fail if submit responses adopt the poll endpoint's terminal status."""
         registry = action_contract_registry()

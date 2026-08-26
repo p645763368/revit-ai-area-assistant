@@ -44,7 +44,8 @@
       "properties": {
         "code": {"type": "string", "minLength": 1, "pattern": "\\S"},
         "message": {"type": "string", "minLength": 1, "pattern": "\\S"},
-        "retryable": {"type": "boolean"}
+        "retryable": {"type": "boolean"},
+        "diagnostic_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{8,64}$"}
       }
     },
     "snapshot": {

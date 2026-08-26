@@ -1,8 +1,10 @@
 import unittest
+import json
 
 from area_assistant_agent.model_protocol import (
     ProtocolShapeError,
     normalize_chat_completion,
+    summarize_chat_completion_shape,
 )
 
 
@@ -86,16 +88,28 @@ class ModelProtocolTests(unittest.TestCase):
         with self.assertRaises(ProtocolShapeError):
             normalize_chat_completion(payload)
 
-    def test_protocol_error_shape_excludes_provider_values(self):
-        sentinel = "provider-secret-value"
-        payload = {"choices": [{"message": {
-            "content": {"secret": sentinel},
-            "reasoning_content": sentinel,
-        }}]}
-        with self.assertRaises(ProtocolShapeError) as context:
-            normalize_chat_completion(payload)
-        self.assertNotIn(sentinel, repr(context.exception.shape))
-        self.assertEqual(context.exception.shape["content_type"], "dict")
+    def test_shape_summary_is_value_free_and_allowlists_keys(self):
+        payload = {
+            "id": "SECRET_KEY",
+            "choices": [{"message": {
+                "content": "SECRET_KEY",
+                "reasoning_content": "SECRET_KEY",
+                "tool_calls": [{"function": {
+                    "name": "inspect_secret",
+                    "arguments": {"revit_path": "C:\\Secret.rvt", "token": "token-value"},
+                }}],
+                "authorization": "token-value",
+            }}],
+            "fingerprint": "SECRET_KEY",
+        }
+
+        summary = summarize_chat_completion_shape(payload)
+        serialized = json.dumps(summary, sort_keys=True)
+
+        for forbidden in ("SECRET_KEY", "C:\\Secret.rvt", "inspect_secret", "token-value"):
+            self.assertNotIn(forbidden, serialized)
+        self.assertEqual(summary["top_level"]["keys"], ["choices", "id"])
+        self.assertEqual(summary["choices"]["count"], 1)
 
 
 if __name__ == "__main__":
