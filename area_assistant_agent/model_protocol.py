@@ -63,6 +63,19 @@ def _normalize_content(content: Any) -> Any:
     return None
 
 
+def _supported_content(content: Any) -> bool:
+    if content is None or isinstance(content, str):
+        return True
+    if not isinstance(content, list):
+        return False
+    return all(
+        isinstance(block, dict)
+        and block.get("type") == "text"
+        and isinstance(block.get("text"), str)
+        for block in content
+    )
+
+
 def _normalize_arguments(arguments: Any) -> Dict[str, Any] | None:
     if isinstance(arguments, dict):
         return arguments
@@ -83,6 +96,8 @@ def _normalize_calls(message: Dict[str, Any]) -> list[Dict[str, Any]] | None:
         calls = []
         for raw_call in raw_calls:
             if not isinstance(raw_call, dict):
+                return None
+            if raw_call.get("type") != "function":
                 return None
             function = raw_call.get("function")
             if not isinstance(function, dict):
@@ -108,7 +123,10 @@ def _normalize_calls(message: Dict[str, Any]) -> list[Dict[str, Any]] | None:
 
 def normalize_chat_completion(payload: Any) -> Dict[str, Any]:
     message = _first_message(payload)
-    content = _normalize_content(message.get("content"))
+    raw_content = message.get("content")
+    if not _supported_content(raw_content):
+        raise _shape_error(payload)
+    content = _normalize_content(raw_content)
     calls = _normalize_calls(message)
     if calls is None or (content is None and not calls):
         raise _shape_error(payload)

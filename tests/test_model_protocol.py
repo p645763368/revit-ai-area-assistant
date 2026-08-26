@@ -51,6 +51,52 @@ class ModelProtocolTests(unittest.TestCase):
             with self.assertRaises(ProtocolShapeError):
                 normalize_chat_completion(payload)
 
+    def test_rejects_unsupported_content_mixed_with_text(self):
+        payload = {"choices": [{"message": {"content": [
+            {"type": "text", "text": "visible"},
+            {"type": "image", "url": "provider-secret"},
+        ]}}]}
+        with self.assertRaises(ProtocolShapeError):
+            normalize_chat_completion(payload)
+
+    def test_rejects_unsupported_content_with_valid_tool_call(self):
+        payload = {"choices": [{"message": {
+            "content": [{"type": "image", "url": "provider-secret"}],
+            "tool_calls": [{"id": "call-1", "type": "function",
+                "function": {"name": "inspect", "arguments": {}}}],
+        }}]}
+        with self.assertRaises(ProtocolShapeError):
+            normalize_chat_completion(payload)
+
+    def test_rejects_unsupported_scalar_content_with_valid_call(self):
+        payload = {"choices": [{"message": {
+            "content": {"provider_secret": "do-not-copy"},
+            "tool_calls": [{"id": "call-1", "type": "function",
+                "function": {"name": "inspect", "arguments": {}}}],
+        }}]}
+        with self.assertRaises(ProtocolShapeError):
+            normalize_chat_completion(payload)
+
+    def test_rejects_non_function_tool_call_type(self):
+        payload = {"choices": [{"message": {
+            "content": None,
+            "tool_calls": [{"id": "call-1", "type": "other",
+                "function": {"name": "inspect", "arguments": {}}}],
+        }}]}
+        with self.assertRaises(ProtocolShapeError):
+            normalize_chat_completion(payload)
+
+    def test_protocol_error_shape_excludes_provider_values(self):
+        sentinel = "provider-secret-value"
+        payload = {"choices": [{"message": {
+            "content": {"secret": sentinel},
+            "reasoning_content": sentinel,
+        }}]}
+        with self.assertRaises(ProtocolShapeError) as context:
+            normalize_chat_completion(payload)
+        self.assertNotIn(sentinel, repr(context.exception.shape))
+        self.assertEqual(context.exception.shape["content_type"], "dict")
+
 
 if __name__ == "__main__":
     unittest.main()
