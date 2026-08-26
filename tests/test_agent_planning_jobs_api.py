@@ -14,6 +14,7 @@ from referencing import Registry, Resource
 
 import area_assistant_agent.server as server_module
 from area_assistant_agent.config import AgentConfig
+from area_assistant_agent.model_api import ModelApiError
 from area_assistant_agent.planning import PlanningResult
 from area_assistant_agent.planning_jobs import PlanningJobRegistry
 from area_assistant_agent.server import create_server
@@ -77,6 +78,29 @@ class _CommitAfterReleasePlanner(_BlockingPlanner):
 class _UnexpectedFailurePlanner:
     def plan(self, conversation, session_directory, audit, **kwargs):
         raise RuntimeError("private-diagnostic-marker-cedar-714")
+
+
+class _ProtocolFailurePlanner:
+    def __init__(self):
+        self.call_count = 0
+
+    def plan(self, conversation, session_directory, audit, **kwargs):
+        self.call_count += 1
+        raise ModelApiError(
+            "model_protocol_error",
+            "Model API returned an incompatible response.",
+            retryable=True,
+            diagnostic_id="diag-test-1234",
+            diagnostic={
+                "top_level": {
+                    "type": "dict",
+                    "keys": ["choices"],
+                    "unknown_key_count": 0,
+                    "fields": {"choices": {"type": "str"}},
+                },
+                "choices": {"type": "str"},
+            },
+        )
 
 
 class AgentPlanningJobsApiTests(unittest.TestCase):
@@ -273,6 +297,59 @@ class AgentPlanningJobsApiTests(unittest.TestCase):
         )
         self.assertNotIn(private_marker, json.dumps(terminal))
         self.assertNotIn(private_marker, persisted)
+
+    def test_protocol_failure_persists_one_diagnostic_and_polling_never_reinvokes_model(self):
+        self.model = _ProtocolFailurePlanner()
+        self.server.planning_agent = self.model
+        submitted = self._submit_plan_job("trigger protocol failure")
+
+        terminal = self._wait_for_terminal(submitted["job_id"])
+        first_poll = self._get_plan_job(submitted["job_id"])
+        second_poll = self._get_plan_job(submitted["job_id"])
+        session_directory = next(
+            Path(self.project.name).glob(
+                "AI_Area_Assistant_Data/documents/*/sessions/*"
+            )
+        )
+
+        self.assertEqual(terminal["state"], "failed")
+        self.assertEqual(terminal["error"]["code"], "model_protocol_error")
+        self.assertEqual(terminal["error"]["diagnostic_id"], "diag-test-1234")
+        self.assertEqual(first_poll, terminal)
+        self.assertEqual(second_poll, terminal)
+        self.assertEqual(self.model.call_count, 1)
+        self.assertEqual(
+            len(list(session_directory.glob("model_diagnostics/*.jsonl"))), 1
+        )
+        self._planning_job_status_validator().validate(
+            {
+                "contract_version": "1.0",
+                "message_type": "response",
+                "request_id": "plan-job-status",
+                "status": "completed",
+                "payload": terminal,
+            }
+        )
+
+    def test_protocol_diagnostic_write_failure_keeps_original_safe_error_without_id(self):
+        self.server.planning_agent = _ProtocolFailurePlanner()
+        with patch.object(
+            server_module,
+            "persist_model_diagnostic",
+            side_effect=OSError("private-write-failure"),
+        ):
+            submitted = self._submit_plan_job("fail diagnostic persistence")
+            terminal = self._wait_for_terminal(submitted["job_id"])
+
+        self.assertEqual(
+            terminal["error"],
+            {
+                "code": "model_protocol_error",
+                "message": "Model API returned an incompatible response.",
+                "retryable": True,
+            },
+        )
+        self.assertNotIn("private-write-failure", json.dumps(terminal))
 
     def test_session_revocation_invalidates_running_job_without_late_commits(self):
         started = threading.Event()

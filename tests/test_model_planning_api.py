@@ -1,10 +1,13 @@
 import json
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
+from urllib.error import HTTPError, URLError
 import unittest
+from unittest.mock import patch
 
 from area_assistant_agent.config import AgentConfig
-from area_assistant_agent.model_api import OpenAICompatibleClient
+from area_assistant_agent.model_api import ModelApiError, OpenAICompatibleClient
 from area_assistant_agent.planning import PLANNING_RESPONSE_FORMAT, TOOL_DEFINITIONS
 
 
@@ -43,6 +46,18 @@ class _PlanningHandler(BaseHTTPRequestHandler):
 
 
 class ModelPlanningApiTests(unittest.TestCase):
+    def setUp(self):
+        self.client = OpenAICompatibleClient(
+            AgentConfig(
+                host="127.0.0.1",
+                port=0,
+                base_url="http://127.0.0.1:1/v1",
+                api_key="unit-test",
+                model="test-model",
+                timeout_seconds=1,
+            )
+        )
+
     def test_non_streaming_tool_call_is_normalized_for_planning_loop(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), _PlanningHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -80,6 +95,157 @@ class ModelPlanningApiTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_planning_turn_uses_normalizer_for_content_blocks_and_object_arguments(self):
+        response = _Response(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": [
+                                {"type": "text", "text": "first"},
+                                {"type": "text", "text": "second"},
+                            ],
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "inspect_revit_model",
+                                        "arguments": {"query": "levels"},
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        )
+
+        with patch("area_assistant_agent.model_api.urlopen", return_value=response):
+            result = self.client.planning_turn([], [])
+
+        self.assertEqual(result["content"], "firstsecond")
+        self.assertEqual(result["tool_calls"][0]["arguments"], {"query": "levels"})
+
+    def test_planning_protocol_failure_has_value_free_diagnostic(self):
+        response = _Response(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": {"secret": "secret-delta-content"},
+                            "reasoning_content": "secret-reasoning",
+                        }
+                    }
+                ]
+            }
+        )
+
+        with patch("area_assistant_agent.model_api.urlopen", return_value=response):
+            with self.assertRaises(ModelApiError) as caught:
+                self.client.planning_turn([], [])
+
+        error = caught.exception
+        self.assertEqual(error.code, "model_protocol_error")
+        self.assertEqual(str(error), "Model API returned an incompatible response.")
+        self.assertIsNotNone(error.diagnostic_id)
+        self.assertNotIn("secret", json.dumps(error.diagnostic))
+
+    def test_planning_http_status_is_classified_without_protocol_diagnostic(self):
+        failure = HTTPError("http://provider", 429, "secret status", {}, None)
+        with patch("area_assistant_agent.model_api.urlopen", side_effect=failure):
+            with self.assertRaises(ModelApiError) as caught:
+                self.client.planning_turn([], [])
+
+        self.assertEqual(caught.exception.code, "model_http_error")
+        self.assertEqual(str(caught.exception), "Model API request failed with HTTP status 429.")
+        self.assertIsNone(caught.exception.diagnostic_id)
+
+    def test_planning_socket_timeout_is_classified(self):
+        with patch(
+            "area_assistant_agent.model_api.urlopen",
+            side_effect=socket.timeout("secret timeout"),
+        ):
+            with self.assertRaises(ModelApiError) as caught:
+                self.client.planning_turn([], [])
+
+        self.assertEqual(caught.exception.code, "model_timeout")
+        self.assertEqual(str(caught.exception), "Model API request timed out.")
+
+    def test_planning_url_error_is_classified(self):
+        with patch(
+            "area_assistant_agent.model_api.urlopen",
+            side_effect=URLError("secret unavailable"),
+        ):
+            with self.assertRaises(ModelApiError) as caught:
+                self.client.planning_turn([], [])
+
+        self.assertEqual(caught.exception.code, "model_unavailable")
+        self.assertEqual(str(caught.exception), "Model API is unavailable.")
+
+    def test_stream_reply_accepts_valid_sse_and_rejects_malformed_event_safely(self):
+        valid = _StreamingResponse(
+            [
+                {"choices": [{"delta": {"content": "hello"}}]},
+                {"choices": [{"finish_reason": "stop"}]},
+            ]
+        )
+        with patch("area_assistant_agent.model_api.urlopen", return_value=valid):
+            self.assertEqual(list(self.client.stream_reply("message")), ["hello"])
+
+        malformed = _StreamingResponse(
+            [
+                {
+                    "choices": [
+                        {"delta": {"content": ["secret-delta-content"]}}
+                    ],
+                    "secret_unknown": "secret-provider-value",
+                }
+            ]
+        )
+        with patch("area_assistant_agent.model_api.urlopen", return_value=malformed):
+            with self.assertRaises(ModelApiError) as caught:
+                list(self.client.stream_reply("message"))
+
+        error = caught.exception
+        self.assertEqual(error.code, "model_protocol_error")
+        self.assertEqual(str(error), "Model API returned an incompatible response.")
+        serialized = json.dumps(error.diagnostic)
+        self.assertNotIn("secret", serialized)
+        self.assertIn('"keys"', serialized)
+        self.assertIn('"type"', serialized)
+
+
+class _Response:
+    def __init__(self, payload):
+        self._body = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def read(self):
+        return self._body
+
+
+class _StreamingResponse:
+    def __init__(self, payloads):
+        self._lines = [
+            ("data: " + json.dumps(payload) + "\n\n").encode("utf-8")
+            for payload in payloads
+        ] + [b"data: [DONE]\n\n"]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def __iter__(self):
+        return iter(self._lines)
 
 
 if __name__ == "__main__":

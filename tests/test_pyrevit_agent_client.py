@@ -529,6 +529,51 @@ class PyRevitAgentClientTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentConnectionError, "Planning job was not found"):
             self.client.get_plan_job("job-a", identity)
 
+    def test_panel_client_accepts_optional_diagnostic_id_but_rejects_unknown_error_fields(self):
+        identity = {
+            "project_directory": "C:\\test",
+            "document_fingerprint": "document-a",
+            "context_id": "context-a",
+            "panel_instance_id": "panel-a",
+            "generation": 1,
+            "session_id": "session-a",
+        }
+        failed = dict(
+            self.server.plan_job_snapshots["get"],
+            state="failed",
+            stage="finished",
+            error={
+                "code": "model_protocol_error",
+                "message": "Model API returned an incompatible response.",
+                "retryable": True,
+                "diagnostic_id": "diag-test-1234",
+            },
+        )
+        self.server.plan_job_snapshots["get"] = failed
+
+        self.assertEqual(
+            self.client.get_plan_job("job-a", identity)["error"]["diagnostic_id"],
+            "diag-test-1234",
+        )
+
+        self.server.plan_job_snapshots["get"] = dict(
+            failed,
+            error=dict(failed["error"], private="not-allowed"),
+        )
+        with self.assertRaisesRegex(AgentConnectionError, "incompatible v1 response"):
+            self.client.get_plan_job("job-a", identity)
+
+        for invalid_id in ("short", "invalid diagnostic", "valid-id\n"):
+            with self.subTest(diagnostic_id=invalid_id):
+                self.server.plan_job_snapshots["get"] = dict(
+                    failed,
+                    error=dict(failed["error"], diagnostic_id=invalid_id),
+                )
+                with self.assertRaisesRegex(
+                    AgentConnectionError, "incompatible v1 response"
+                ):
+                    self.client.get_plan_job("job-a", identity)
+
     def test_plan_job_transport_error_hides_private_exception_text_without_retry(self):
         identity = {
             "project_directory": "C:\\test",

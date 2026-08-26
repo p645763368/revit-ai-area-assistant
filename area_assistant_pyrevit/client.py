@@ -80,6 +80,7 @@ _PLAN_JOB_IDENTITY_FIELDS = {
 _ISO_TIMESTAMP = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )
+_DIAGNOSTIC_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 
 def _valid_iso_timestamp(value):
@@ -90,6 +91,13 @@ def _valid_iso_timestamp(value):
     except (TypeError, ValueError):
         return False
     return True
+
+
+def _valid_diagnostic_id(value):
+    if not _nonempty_string(value):
+        return False
+    match = _DIAGNOSTIC_ID.match(value)
+    return match is not None and len(match.group(0)) == len(value)
 
 
 def _valid_plan_job_identity(identity):
@@ -139,15 +147,21 @@ def _valid_plan_job_snapshot(payload):
         )
     if state in ("failed", "interrupted"):
         error = payload.get("error")
+        required_error_fields = {"code", "message", "retryable"}
         return (
             payload.get("result") is None
             and isinstance(error, dict)
-            and set(error) == {"code", "message", "retryable"}
+            and required_error_fields.issubset(error)
+            and set(error).issubset(required_error_fields | {"diagnostic_id"})
             and _nonempty_string(error.get("code"))
             and _nonempty_string(error.get("message"))
             and bool(error["code"].strip())
             and bool(error["message"].strip())
             and isinstance(error.get("retryable"), bool)
+            and (
+                "diagnostic_id" not in error
+                or _valid_diagnostic_id(error.get("diagnostic_id"))
+            )
         )
     return payload.get("result") is None and payload.get("error") is None
 

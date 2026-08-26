@@ -61,6 +61,7 @@ RFC3339_TIMESTAMP = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$",
     re.IGNORECASE,
 )
+DIAGNOSTIC_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 
 def _utc_now() -> str:
@@ -375,11 +376,13 @@ class PlanningJobRegistry:
 
     @staticmethod
     def _sanitize_error(error: Any) -> Dict[str, Any]:
-        if not isinstance(error, dict) or set(error) != {
-            "code",
-            "message",
-            "retryable",
-        }:
+        required = {"code", "message", "retryable"}
+        allowed = required | {"diagnostic_id"}
+        if (
+            not isinstance(error, dict)
+            or not required.issubset(error)
+            or not set(error).issubset(allowed)
+        ):
             raise ValueError("planning error is not contract-safe")
         sanitized = redact_sensitive(deepcopy(error))
         if (
@@ -388,13 +391,23 @@ class PlanningJobRegistry:
             or not isinstance(sanitized["message"], str)
             or not sanitized["message"].strip()
             or type(sanitized["retryable"]) is not bool
+            or (
+                "diagnostic_id" in sanitized
+                and (
+                    not isinstance(sanitized["diagnostic_id"], str)
+                    or DIAGNOSTIC_ID.fullmatch(sanitized["diagnostic_id"]) is None
+                )
+            )
         ):
             raise ValueError("planning error is not contract-safe")
-        return {
+        result = {
             "code": sanitized["code"],
             "message": sanitized["message"],
             "retryable": sanitized["retryable"],
         }
+        if "diagnostic_id" in sanitized:
+            result["diagnostic_id"] = sanitized["diagnostic_id"]
+        return result
 
     def _record_for(self, job_id: str) -> Dict[str, Any]:
         try:

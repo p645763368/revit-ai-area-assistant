@@ -4,21 +4,43 @@ import json
 import socket
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+import uuid
+
+from .model_protocol import (
+    ProtocolShapeError,
+    normalize_chat_completion,
+    summarize_chat_completion_shape,
+)
 
 
 class ModelApiError(Exception):
-    def __init__(self, code, message, retryable=True):
+    def __init__(
+        self,
+        code,
+        message,
+        retryable=True,
+        diagnostic_id=None,
+        diagnostic=None,
+    ):
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+        self.diagnostic_id = diagnostic_id
+        self.diagnostic = diagnostic
 
 
-def _protocol_error():
+def _protocol_error(shape):
     return ModelApiError(
         "model_protocol_error",
-        "Model API returned an incompatible streaming response.",
+        "Model API returned an incompatible response.",
         retryable=True,
+        diagnostic_id=uuid.uuid4().hex,
+        diagnostic=shape,
     )
+
+
+def _protocol_error_for_payload(payload):
+    return _protocol_error(summarize_chat_completion_shape(payload))
 
 
 class OpenAICompatibleClient:
@@ -62,15 +84,15 @@ class OpenAICompatibleClient:
                         return
                     try:
                         event = json.loads(data)
-                    except ValueError as exc:
-                        raise _protocol_error() from exc
+                    except ValueError:
+                        raise _protocol_error_for_payload(None) from None
                     if not isinstance(event, dict):
-                        raise _protocol_error()
+                        raise _protocol_error_for_payload(event)
                     choices = event.get("choices")
                     if choices == [] or (choices is None and "usage" in event):
                         continue
                     if not isinstance(choices, list) or not isinstance(choices[0], dict):
-                        raise _protocol_error()
+                        raise _protocol_error_for_payload(event)
                     choice = choices[0]
                     if choice.get("finish_reason") is not None:
                         terminated = True
@@ -78,16 +100,16 @@ class OpenAICompatibleClient:
                     if delta is None and choice.get("finish_reason") is not None:
                         continue
                     if not isinstance(delta, dict):
-                        raise _protocol_error()
+                        raise _protocol_error_for_payload(event)
                     content = delta.get("content")
                     if content is None:
                         continue
                     if not isinstance(content, str):
-                        raise _protocol_error()
+                        raise _protocol_error_for_payload(event)
                     if content:
                         yield content
             if not terminated:
-                raise _protocol_error()
+                raise _protocol_error_for_payload(None)
         except HTTPError as exc:
             raise ModelApiError(
                 "model_http_error",
@@ -133,31 +155,17 @@ class OpenAICompatibleClient:
         )
         try:
             with urlopen(request, timeout=self._config.timeout_seconds) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            message = payload["choices"][0]["message"]
-            content = message.get("content")
-            if content is not None and not isinstance(content, str):
-                raise _protocol_error()
-            calls = []
-            for item in message.get("tool_calls", []):
-                function = item.get("function")
-                if not isinstance(function, dict):
-                    raise _protocol_error()
-                arguments = json.loads(function.get("arguments", "{}"))
-                if not isinstance(arguments, dict):
-                    raise _protocol_error()
-                name = function.get("name")
-                call_id = item.get("id")
-                if not isinstance(name, str) or not name or not isinstance(call_id, str) or not call_id:
-                    raise _protocol_error()
-                calls.append({"id": call_id, "name": name, "arguments": arguments})
-            if content is None and not calls:
-                raise _protocol_error()
-            return {"content": content, "tool_calls": calls}
+                decoded_body = response.read().decode("utf-8")
+            try:
+                payload = json.loads(decoded_body)
+            except (TypeError, ValueError):
+                raise _protocol_error_for_payload(None) from None
+            try:
+                return normalize_chat_completion(payload)
+            except ProtocolShapeError as error:
+                raise _protocol_error(error.shape) from None
         except ModelApiError:
             raise
-        except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise _protocol_error() from exc
         except HTTPError as exc:
             raise ModelApiError(
                 "model_http_error",

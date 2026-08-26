@@ -12,6 +12,7 @@ from . import CONTRACT_VERSION, SERVICE_NAME
 from .binding_state_store import BindingStateStore
 from .document_status_runtime import resolve_document_status
 from .model_api import ModelApiError, OpenAICompatibleClient
+from .model_diagnostics import persist_model_diagnostic
 from .persistence import SessionRepository
 from .planning import KnowledgeCatalog, PlanningAgent
 from .planning_jobs import PlanningJobRegistry
@@ -264,15 +265,28 @@ def _run_plan_job(server, registry, job_id, request, identity):
         registry.cancel(job_id, identity)
     except ModelApiError as error:
         if registry.is_active(job_id):
+            public_error = {
+                "code": error.code,
+                "message": str(error),
+                "retryable": error.retryable,
+            }
+            if error.diagnostic is not None and error.diagnostic_id is not None:
+                try:
+                    persist_model_diagnostic(
+                        registry.storage_root.parent,
+                        job_id,
+                        error.diagnostic_id,
+                        error.diagnostic,
+                    )
+                except Exception:
+                    pass
+                else:
+                    public_error["diagnostic_id"] = error.diagnostic_id
             registry.transition(
                 job_id,
                 "failed",
                 "finished",
-                error={
-                    "code": error.code,
-                    "message": str(error),
-                    "retryable": error.retryable,
-                },
+                error=public_error,
             )
     except Exception:
         if registry.is_active(job_id):
@@ -371,6 +385,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 self._write_event(_response(request_id, "accepted", {"delta": delta}))
             self._write_event(_response(request_id, "completed", {"message": "".join(complete)}))
         except ModelApiError as exc:
+            self._persist_active_session_diagnostic(exc)
             self._write_event(_error(request_id, exc.code, str(exc), exc.retryable))
 
     def _open_session(self):
@@ -803,6 +818,33 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         payload = request["payload"]
         payload["request_id"] = request["request_id"]
         return payload
+
+    def _persist_active_session_diagnostic(self, error):
+        if error.diagnostic is None or error.diagnostic_id is None:
+            return
+        try:
+            with self.server.session_lock:
+                context = self.server.session_context
+                if context is None or context[5] is None:
+                    return
+                context_id = context[2]
+                data_root = Path(context[3]).resolve()
+                document_fingerprint = context[4]
+                session_id = context[5]
+                repository = SessionRepository(data_root.parent)
+                if repository.data_root != data_root:
+                    return
+                session_directory = repository.session_directory(
+                    document_fingerprint, session_id
+                )
+            persist_model_diagnostic(
+                session_directory,
+                context_id,
+                error.diagnostic_id,
+                error.diagnostic,
+            )
+        except Exception:
+            pass
 
     @staticmethod
     def _panel_generation(request):

@@ -1,7 +1,9 @@
 import json
 import io
+from pathlib import Path
 import threading
 import time
+import tempfile
 from contextlib import redirect_stderr
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError
@@ -14,6 +16,7 @@ from area_assistant_agent.server import create_server
 
 class _StreamingModelHandler(BaseHTTPRequestHandler):
     def do_POST(self):
+        self.server.request_count += 1
         content_length = int(self.headers["Content-Length"])
         self.server.received = json.loads(self.rfile.read(content_length))
         self.server.authorization = self.headers.get("Authorization")
@@ -28,6 +31,19 @@ class _StreamingModelHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
+        if "/malformed/" in self.path:
+            event = {
+                "choices": [
+                    {"delta": {"content": ["secret-stream-content"]}}
+                ],
+                "unknown_secret": "secret-provider-value",
+            }
+            self.wfile.write(
+                ("data: " + json.dumps(event) + "\n\n").encode("utf-8")
+            )
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+            return
         payloads = (
             {"choices": [{"delta": {"content": "你好"}}]},
             {"choices": [{"delta": {"content": "，建筑师"}}]},
@@ -59,6 +75,7 @@ class _StreamingModelHandler(BaseHTTPRequestHandler):
 class AgentChatApiTests(unittest.TestCase):
     def setUp(self):
         self.model_server = ThreadingHTTPServer(("127.0.0.1", 0), _StreamingModelHandler)
+        self.model_server.request_count = 0
         self.model_thread = threading.Thread(target=self.model_server.serve_forever)
         self.model_thread.daemon = True
         self.model_thread.start()
@@ -207,6 +224,71 @@ class AgentChatApiTests(unittest.TestCase):
         self.assertEqual(events[-1]["code"], "model_http_error")
         self.assertTrue(events[-1]["retryable"])
 
+    def test_session_chat_protocol_failure_persists_one_safe_diagnostic_without_retry(self):
+        self._restart_agent("malformed", timeout_seconds=1)
+        self.model_server.request_count = 0
+        with tempfile.TemporaryDirectory() as project_directory:
+            opened = self._post_session(
+                "/v1/sessions/open",
+                "session.open",
+                {
+                    "document_fingerprint": "document-a",
+                    "generation": 1,
+                    "panel_instance_id": "panel-a",
+                    "project_directory": project_directory,
+                },
+            )
+            chosen = self._post_session(
+                "/v1/sessions/choose",
+                "session.choose",
+                {
+                    "choice": "new",
+                    "context_id": opened["context_id"],
+                    "document_fingerprint": "document-a",
+                    "generation": 1,
+                    "panel_instance_id": "panel-a",
+                    "project_directory": project_directory,
+                    "session_id": None,
+                },
+            )
+            identity = {
+                "context_id": chosen["context_id"],
+                "document_fingerprint": "document-a",
+                "generation": 1,
+                "panel_instance_id": "panel-a",
+                "project_directory": project_directory,
+                "session_id": chosen["active_session_id"],
+            }
+            recorded = self._post_session(
+                "/v1/sessions/messages",
+                "session.message",
+                dict(identity, role="user", content="hello"),
+            )
+
+            events = self._send_chat("req-malformed-session")
+            session_directory = next(
+                Path(project_directory).glob(
+                    "AI_Area_Assistant_Data/documents/*/sessions/*"
+                )
+            )
+            diagnostics = list(
+                session_directory.glob("model_diagnostics/*.jsonl")
+            )
+
+            self.assertTrue(recorded["recorded"])
+            self.assertEqual(len(events), 2)
+            self.assertEqual(events[-1]["message_type"], "error")
+            self.assertEqual(events[-1]["code"], "model_protocol_error")
+            self.assertEqual(
+                events[-1]["message"],
+                "Model API returned an incompatible response.",
+            )
+            self.assertEqual(self.model_server.request_count, 1)
+            self.assertEqual(len(diagnostics), 1)
+            persisted = diagnostics[0].read_text(encoding="utf-8")
+            self.assertNotIn("secret", persisted)
+            self.assertNotIn("secret", json.dumps(events))
+
     def _restart_agent(self, prefix, timeout_seconds):
         self.agent_server.shutdown()
         self.agent_server.server_close()
@@ -242,6 +324,26 @@ class AgentChatApiTests(unittest.TestCase):
         )
         with urlopen(request, timeout=2) as response:
             return [json.loads(line) for line in response if line.strip()]
+
+    def _post_session(self, path, action, payload):
+        request_id = "req-" + action
+        request = Request(
+            "http://127.0.0.1:{}{}".format(self.agent_server.server_port, path),
+            data=json.dumps(
+                {
+                    "contract_version": "1.0",
+                    "message_type": "request",
+                    "request_id": request_id,
+                    "action": action,
+                    "payload": payload,
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=2) as response:
+            envelope = json.loads(response.read().decode("utf-8"))
+        return envelope["payload"]
 
 
 if __name__ == "__main__":
