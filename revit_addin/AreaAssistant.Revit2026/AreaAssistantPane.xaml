@@ -25,7 +25,7 @@
                 <StackPanel>
                     <TextBlock FontWeight="SemiBold" Text="边界来源" />
                     <TextBlock x:Name="SelectionText" Margin="0,4,0,8" Text="未选择" TextWrapping="Wrap" />
-                    <Button x:Name="ReadSelectionButton" Height="30" Content="读取当前选择" IsEnabled="False" />
+                    <Button x:Name="ReadSelectionButton" Height="30" Content="读取当前选择" IsEnabled="False" Click="ReadSelectionButton_Click" />
                 </StackPanel>
             </Border>
 

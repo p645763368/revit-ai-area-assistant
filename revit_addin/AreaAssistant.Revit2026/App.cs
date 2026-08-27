@@ -11,10 +11,12 @@ internal static class AddinIds
 public sealed class App : IExternalApplication
 {
     internal static DockablePaneId PaneId { get; } = new(AddinIds.PaneGuid);
+    internal static AreaAssistantPane? Pane { get; private set; }
 
     public Result OnStartup(UIControlledApplication application)
     {
         var pane = new AreaAssistantPane();
+        Pane = pane;
         application.RegisterDockablePane(
             PaneId,
             "AI Area Assistant",

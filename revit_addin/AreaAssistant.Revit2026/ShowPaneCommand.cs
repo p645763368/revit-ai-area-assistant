@@ -12,6 +12,7 @@ public sealed class ShowPaneCommand : IExternalCommand
         ref string message,
         ElementSet elements)
     {
+        App.Pane?.Attach(commandData.Application);
         commandData.Application.GetDockablePane(App.PaneId).Show();
         return Result.Succeeded;
     }
