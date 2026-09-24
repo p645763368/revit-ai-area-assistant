@@ -17,7 +17,7 @@ public sealed class App : IExternalApplication
     {
         var pane = new AreaAssistantPane();
         Pane = pane;
-        application.Idling += pane.InitializeOnFirstIdling;
+        application.Idling += pane.OnIdling;
         application.RegisterDockablePane(
             PaneId,
             "AI Area Assistant",

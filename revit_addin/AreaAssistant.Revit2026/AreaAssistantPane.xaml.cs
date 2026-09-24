@@ -22,7 +22,6 @@ public partial class AreaAssistantPane : Page
     private IReadOnlyList<SelectedSource> _sources = [];
     private PaneState _state = new(PanePhase.StartingAgent);
     private int _generation;
-    private bool _idlingSubscribed;
     private bool _scanAfterSelection;
     private CancellationTokenSource? _pollCancellation;
 
@@ -41,21 +40,30 @@ public partial class AreaAssistantPane : Page
     internal async void Attach(UIApplication application)
     {
         _context = new RevitContext(application);
-        if (!_idlingSubscribed)
-        {
-            application.Idling += OnIdling;
-            _idlingSubscribed = true;
-        }
         _documentData = RevitContext.Capture(_context.CurrentDocument);
         ShowDocument();
         await EnsureDocumentSessionAsync(_documentData);
     }
 
-    internal void InitializeOnFirstIdling(object? sender, IdlingEventArgs e)
+    internal void OnIdling(object? sender, IdlingEventArgs e)
     {
         if (sender is not UIApplication application) return;
-        application.Idling -= InitializeOnFirstIdling;
-        Attach(application);
+        if (_context is null)
+        {
+            Attach(application);
+            return;
+        }
+        if (_session is null) return;
+        var currentIdentity = RevitContext.CreateIdentity(_context.CurrentDocument);
+        if (currentIdentity == _session.DocumentFingerprint) return;
+        _pollCancellation?.Cancel();
+        _session = null;
+        _planning = null;
+        _sources = [];
+        SelectionText.Text = "文档已变化，请重新读取当前选择";
+        ResultText.Text = "尚无方案";
+        ErrorText.Text = "";
+        SetState(PanePhase.Ready);
     }
 
     private async Task EnsureDocumentSessionAsync(RevitDocumentData document)
@@ -168,21 +176,6 @@ public partial class AreaAssistantPane : Page
             ErrorText.Text = error.Message;
             SetState(PanePhase.Failed);
         }
-    }
-
-    private void OnIdling(object? sender, Autodesk.Revit.UI.Events.IdlingEventArgs e)
-    {
-        if (_context is null || _session is null) return;
-        var currentIdentity = RevitContext.CreateIdentity(_context.CurrentDocument);
-        if (currentIdentity == _session.DocumentFingerprint) return;
-        _pollCancellation?.Cancel();
-        _session = null;
-        _planning = null;
-        _sources = [];
-        SelectionText.Text = "文档已变化，请重新读取当前选择";
-        ResultText.Text = "尚无方案";
-        ErrorText.Text = "";
-        SetState(PanePhase.Ready);
     }
 
     private void RenderTerminal(PlanJobSnapshot snapshot)
