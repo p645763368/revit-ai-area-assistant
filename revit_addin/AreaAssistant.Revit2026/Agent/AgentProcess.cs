@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 
 namespace AreaAssistant.Revit2026.Agent;
 
@@ -19,6 +20,18 @@ public sealed class AgentProcess
     {
         if (await _client.IsHealthyAsync(cancellationToken)) return new(true, "Agent 已连接");
 
+        var logDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "AI Area Assistant");
+        Directory.CreateDirectory(logDirectory);
+        var logPath = Path.Combine(logDirectory, "agent.log");
+        var logLock = new object();
+        void WriteLog(string? line)
+        {
+            if (line is null) return;
+            lock (logLock) File.AppendAllText(logPath, line + Environment.NewLine);
+        }
+
         var process = new Process
         {
             StartInfo = new ProcessStartInfo
@@ -32,9 +45,9 @@ public sealed class AgentProcess
                 RedirectStandardError = true,
             },
         };
-        process.OutputDataReceived += (_, _) => { };
-        process.ErrorDataReceived += (_, _) => { };
-        if (!process.Start()) return new(false, "无法启动 Agent");
+        process.OutputDataReceived += (_, args) => WriteLog(args.Data);
+        process.ErrorDataReceived += (_, args) => WriteLog(args.Data);
+        if (!process.Start()) return new(false, $"无法启动 Agent。日志：{logPath}");
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
@@ -45,6 +58,6 @@ public sealed class AgentProcess
             if (await _client.IsHealthyAsync(cancellationToken)) return new(true, "Agent 已连接");
             if (process.HasExited) break;
         }
-        return new(false, "Agent 启动超时");
+        return new(false, $"Agent 启动失败或超时。日志：{logPath}");
     }
 }

@@ -8,12 +8,27 @@ from area_assistant_agent.document_binding import document_fingerprint
 
 
 class FakeMcpClient:
+    def __init__(self, document=None):
+        self.document = document
+
     def call_tool(self, name, arguments):
         if name == "revit_list_available_targets":
             return {"count": 1, "targets": [{"year": "2026", "pid": 4312}]}
         if name == "revit_switch_target":
             return {"ok": True, "verified": True}
         if name == "revit_send_code_to_revit":
+            if self.document is not None:
+                return {
+                    "executed": True,
+                    "result": {
+                        "documentTitle": self.document["document_title"],
+                        "documentPath": self.document["document_path"],
+                        "projectInformationId": "project-id",
+                        "activeViewId": self.document["active_view"]["id"],
+                        "activeViewName": self.document["active_view"]["name"],
+                        "isModified": self.document["is_modified"],
+                    },
+                }
             return {
                 "executed": True,
                 "result": {
@@ -126,6 +141,33 @@ class DocumentStatusRuntimeTests(unittest.TestCase):
         self.assertEqual(returned["payload"]["binding_status"], "paused")
         self.assertEqual(returned["payload"]["pause_reason"], "document_changed")
         self.assertIs(returned["payload"]["write_allowed"], False)
+
+    def test_explicit_rebind_replaces_stored_document_after_live_verification(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = BindingStateStore(Path(temporary))
+            resolve_document_status(
+                request_id="req-rebind-1",
+                current_payload=payload(),
+                previous_payload=None,
+                previous_pause_reason=None,
+                authorized_document_path=r"D:\RevitTests\development-copy.rvt",
+                client=FakeMcpClient(),
+                binding_store=store,
+            )
+            new_payload = payload(path=r"D:\RevitTests\another-model.rvt")
+            rebound = resolve_document_status(
+                request_id="req-rebind-2",
+                current_payload=new_payload,
+                previous_payload=None,
+                previous_pause_reason=None,
+                authorized_document_path=r"D:\RevitTests\another-model.rvt",
+                client=FakeMcpClient(document=new_payload),
+                binding_store=store,
+                allow_document_rebind=True,
+            )
+
+            self.assertEqual(rebound["payload"]["binding_status"], "bound")
+            self.assertEqual(store.load("revit-4312")["bound_document"], new_payload)
 
 
 if __name__ == "__main__":

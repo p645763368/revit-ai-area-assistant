@@ -7,28 +7,19 @@ public sealed class ReadSelectionHandler : IExternalEventHandler
 {
     private const double MillimetresPerFoot = 304.8;
     private readonly Action<SelectionReadResult> _completed;
-    private string? _expectedDocumentIdentity;
 
     public ReadSelectionHandler(Action<SelectionReadResult> completed) => _completed = completed;
-    public void Request(string expectedDocumentIdentity) => _expectedDocumentIdentity = expectedDocumentIdentity;
     public string GetName() => "Read AI Area Assistant selection";
 
     public void Execute(UIApplication application)
     {
         var document = application.ActiveUIDocument.Document;
-        var identity = RevitContext.CreateIdentity(document);
-        if (_expectedDocumentIdentity != identity)
-        {
-            _completed(new SelectionReadResult(identity, []));
-            return;
-        }
-
         var sources = application.ActiveUIDocument.Selection.GetElementIds()
             .Select(document.GetElement)
             .Where(element => element is Floor or RoofBase or Wall)
             .Select(element => Map(document, element))
             .ToArray();
-        _completed(new SelectionReadResult(identity, sources));
+        _completed(new SelectionReadResult(RevitContext.Capture(document), sources));
     }
 
     private static SelectedSource Map(Document document, Element element)

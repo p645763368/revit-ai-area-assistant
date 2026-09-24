@@ -920,6 +920,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 or request.get("action") != "revit.document_status"
                 or not request_id
                 or not isinstance(payload, dict)
+                or not isinstance(payload.get("allow_document_rebind", False), bool)
             ):
                 raise ValueError("invalid request")
             with self.server.document_status_lock:
@@ -934,6 +935,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                         ),
                         client=client,
                         binding_store=self.server.binding_store,
+                        allow_document_rebind=payload.get("allow_document_rebind", False),
                     )
                 with self.server.session_lock:
                     self.server.current_document_status = response["payload"]

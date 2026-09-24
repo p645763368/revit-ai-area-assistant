@@ -37,11 +37,13 @@ Python Agent 负责 DeepSeek、规划、知识、会话与持久 Job、rvt-mcp �
 - 持久规划 Job；
 - 一次真实只读 Job 到达 `completed / finished` 并返回 3 个方案；
 - 该次测试中 Revit 保持 `IsModified: False`。
+- Revit 2026 C#/.NET 8 Add-in、Dockable Pane 和 Ribbon 入口已实现；
+- C# 可通过只读 `ExternalEvent` 读取当前 Floor、Roof 或 Wall 选择；
+- C# Agent 客户端已用自动测试证明一次点击最多一次 POST，随后只轮询同一 Job ID。
 
 尚未完成：
 
-- Revit 2026 C# Add-in、Dockable Pane、自动启动 Agent；
-- C# 元素选择、Job 查询和方案展示；
+- 新 C# Add-in 的 Revit 2026 实机人工验收；
 - 任何 Revit 写入功能。
 
 不要把 Python Agent 已完成描述成整个 Revit 插件已经可用。
@@ -94,9 +96,23 @@ python -m pip install -e ".[test]"
 python -m unittest discover -s tests -v
 python -m compileall -q area_assistant_agent scripts tests
 python scripts/check_repository_safety.py
+dotnet test revit_addin/AreaAssistant.Revit2026.Tests/AreaAssistant.Revit2026.Tests.csproj -c Release
+dotnet build revit_addin/AreaAssistant.Revit2026/AreaAssistant.Revit2026.csproj -c Release
 ```
 
 C# 只针对 Revit 2026、.NET 8 和 x64。具体步骤见当前 C# 实施计划。
+
+## Revit 2026 C# Add-in
+
+本机运行前只需要两个额外的用户环境变量：
+
+```text
+AI_AREA_ASSISTANT_PYTHON=<Python 3.10 python.exe 的完整路径>
+AI_AREA_ASSISTANT_REPO_ROOT=<本仓库的完整路径>
+```
+
+将 `.addin` 文件放在 Revit 2026 Addins 根目录，将编译产物放在其 `AreaAssistant` 子目录。人工验收步骤见
+`docs/csharp-revit-2026-manual-test.md`。
 
 ## 后续 Issue 的强制边界
 
@@ -106,4 +122,3 @@ C# 只针对 Revit 2026、.NET 8 和 x64。具体步骤见当前 C# 实施计划
 - 不做跨 Revit 版本兼容。
 - 不自动重试可能付费的模型请求。
 - 没有用户明确授权时，不执行 Revit 写入或真实模型请求。
-

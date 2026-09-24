@@ -34,7 +34,8 @@
                 Height="34"
                 Margin="0,12,0,0"
                 Content="扫描与方案"
-                IsEnabled="False" />
+                IsEnabled="False"
+                Click="ScanButton_Click" />
 
             <Border Margin="0,12,0,0" Padding="10" Background="White" CornerRadius="4">
                 <StackPanel>

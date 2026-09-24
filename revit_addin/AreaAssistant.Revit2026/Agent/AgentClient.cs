@@ -14,12 +14,22 @@ public sealed class AgentClient
 
     public async Task<bool> IsHealthyAsync(CancellationToken cancellationToken)
     {
+        using var healthTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        healthTimeout.CancelAfter(TimeSpan.FromSeconds(1));
         try
         {
-            using var response = await _http.GetAsync("health", cancellationToken);
-            return response.IsSuccessStatusCode;
+            using var response = await _http.GetAsync("health", healthTimeout.Token);
+            if (!response.IsSuccessStatusCode) return false;
+            var envelope = await response.Content.ReadFromJsonAsync<ResponseEnvelope<JsonElement>>(JsonOptions, healthTimeout.Token);
+            return envelope is not null
+                && envelope.Payload.TryGetProperty("service", out var service)
+                && service.GetString() == "revit-ai-area-assistant-agent";
         }
         catch (HttpRequestException)
+        {
+            return false;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             return false;
         }
@@ -48,6 +58,19 @@ public sealed class AgentClient
             RequiredString(chosen, "active_session_id"), projectDirectory);
     }
 
+    public Task<DocumentBinding> BindDocumentAsync(DocumentSnapshot snapshot, CancellationToken cancellationToken) =>
+        PostAsync<Dictionary<string, object?>, DocumentBinding>(
+            "v1/document-status",
+            "revit.document_status",
+            new Dictionary<string, object?>
+            {
+                ["current_document"] = snapshot,
+                ["previous_document"] = null,
+                ["previous_pause_reason"] = null,
+                ["allow_document_rebind"] = true,
+            },
+            cancellationToken);
+
     public Task<PlanJobSnapshot> SubmitPlanAsync(
         SessionIdentity identity, string message, CancellationToken cancellationToken)
     {
@@ -62,7 +85,6 @@ public sealed class AgentClient
         SessionIdentity identity, string jobId, CancellationToken cancellationToken)
     {
         var query = string.Join("&", IdentityPayload(identity)
-            .Where(item => item.Key != "project_directory")
             .Select(item => $"{Uri.EscapeDataString(item.Key)}={Uri.EscapeDataString(Convert.ToString(item.Value, System.Globalization.CultureInfo.InvariantCulture) ?? "")}"));
         using var response = await _http.GetAsync($"v1/plan-jobs/{Uri.EscapeDataString(jobId)}?{query}", cancellationToken);
         response.EnsureSuccessStatusCode();
@@ -103,8 +125,18 @@ public sealed class AgentClient
     {
         if (string.IsNullOrWhiteSpace(snapshot.JobId) || string.IsNullOrWhiteSpace(snapshot.State))
             throw new InvalidDataException("Agent returned an invalid job.");
+        if (string.IsNullOrWhiteSpace(snapshot.Stage))
+            throw new InvalidDataException("Agent returned an invalid job stage.");
         if (snapshot.Result is null) return;
+        if (string.IsNullOrWhiteSpace(snapshot.Result.Summary) || string.IsNullOrWhiteSpace(snapshot.Result.Question))
+            throw new InvalidDataException("Agent returned an incomplete planning result.");
         if (snapshot.Result.Options.Count is < 2 or > 4 || snapshot.Result.Options.Count(option => option.Recommended) != 1)
             throw new InvalidDataException("Agent returned invalid planning options.");
+        if (snapshot.Result.Options.Any(option =>
+            string.IsNullOrWhiteSpace(option.Id)
+            || string.IsNullOrWhiteSpace(option.Label)
+            || string.IsNullOrWhiteSpace(option.Rationale)
+            || string.IsNullOrWhiteSpace(option.Impact)))
+            throw new InvalidDataException("Agent returned an incomplete planning option.");
     }
 }

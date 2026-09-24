@@ -18,4 +18,13 @@ public sealed record SelectedSource(
     public string DisplayText => $"ID {ElementId} | {Category} | {LevelName} | {TypeName}";
 }
 
-public sealed record SelectionReadResult(string DocumentIdentity, IReadOnlyList<SelectedSource> Sources);
+public sealed record RevitDocumentData(
+    string RevitInstanceId,
+    string Title,
+    string Path,
+    string Fingerprint,
+    string ActiveViewId,
+    string ActiveViewName,
+    bool IsModified);
+
+public sealed record SelectionReadResult(RevitDocumentData Document, IReadOnlyList<SelectedSource> Sources);

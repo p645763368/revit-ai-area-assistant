@@ -32,10 +32,15 @@ def resolve_document_status(
     authorized_document_path: str,
     client: Any,
     binding_store: Optional[BindingStateStore] = None,
+    allow_document_rebind: bool = False,
 ) -> dict:
     session = DocumentBindingSession(authorized_document_path)
     current_snapshot = document_snapshot_from_payload(current_payload)
-    stored = binding_store.load(current_snapshot.instance_id) if binding_store else None
+    stored = (
+        binding_store.load(current_snapshot.instance_id)
+        if binding_store and not allow_document_rebind
+        else None
+    )
     restored_payload = stored.get("bound_document") if stored else previous_payload
     restored_pause_reason = stored.get("pause_reason") if stored else previous_pause_reason
     if stored is not None and restored_payload is None:

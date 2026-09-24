@@ -4,6 +4,20 @@ namespace AreaAssistant.Revit2026.Agent;
 
 public sealed record AgentReadiness(bool IsReady, string Message);
 
+public sealed record ActiveViewSnapshot(string Id, string Name);
+public sealed record DocumentSnapshot(
+    [property: JsonPropertyName("revit_instance_id")] string RevitInstanceId,
+    [property: JsonPropertyName("document_title")] string DocumentTitle,
+    [property: JsonPropertyName("document_path")] string DocumentPath,
+    [property: JsonPropertyName("document_fingerprint")] string DocumentFingerprint,
+    [property: JsonPropertyName("active_view")] ActiveViewSnapshot ActiveView,
+    [property: JsonPropertyName("is_modified")] bool IsModified);
+public sealed record DocumentBinding(
+    [property: JsonPropertyName("binding_status")] string BindingStatus,
+    [property: JsonPropertyName("rvt_mcp_status")] string RvtMcpStatus,
+    [property: JsonPropertyName("write_allowed")] bool WriteAllowed,
+    [property: JsonPropertyName("pause_reason")] string? PauseReason);
+
 public sealed record SessionIdentity(
     [property: JsonPropertyName("panel_instance_id")] string PanelInstanceId,
     [property: JsonPropertyName("generation")] int Generation,

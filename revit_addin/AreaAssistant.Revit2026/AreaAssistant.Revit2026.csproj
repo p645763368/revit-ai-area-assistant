@@ -32,6 +32,7 @@
     <Compile Include="Agent\AgentClient.cs" />
     <Compile Include="Agent\Contracts.cs" />
     <Compile Include="Planning\PlanningCoordinator.cs" />
+    <Compile Include="Planning\PaneState.cs" />
     <Compile Include="Revit\RevitContext.cs" />
     <Compile Include="Revit\ReadSelectionHandler.cs" />
     <Compile Include="Revit\SelectedSource.cs" />
