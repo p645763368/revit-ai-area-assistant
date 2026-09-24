@@ -39,15 +39,43 @@ public partial class AreaAssistantPane : Page
 
     internal async void Attach(UIApplication application)
     {
-        _context = new RevitContext(application);
-        _documentData = RevitContext.Capture(_context.CurrentDocument);
-        ShowDocument();
-        await EnsureDocumentSessionAsync(_documentData);
+        var uiDocument = application.ActiveUIDocument;
+        if (uiDocument is null)
+        {
+            _context = null;
+            AgentStatusText.Text = "等待文档";
+            DocumentStatusText.Text = "请打开 Revit 文档";
+            SetState(PanePhase.StartingAgent);
+            return;
+        }
+        try
+        {
+            _context = new RevitContext(application);
+            _documentData = RevitContext.Capture(uiDocument.Document);
+            ShowDocument();
+            await EnsureDocumentSessionAsync(_documentData);
+        }
+        catch (Exception error)
+        {
+            ErrorText.Text = error.Message;
+            SetState(PanePhase.Failed);
+        }
     }
 
     internal void OnIdling(object? sender, IdlingEventArgs e)
     {
         if (sender is not UIApplication application) return;
+        if (application.ActiveUIDocument is null)
+        {
+            if (_context is not null) _pollCancellation?.Cancel();
+            _context = null;
+            _session = null;
+            _planning = null;
+            AgentStatusText.Text = "等待文档";
+            DocumentStatusText.Text = "请打开 Revit 文档";
+            SetState(PanePhase.StartingAgent);
+            return;
+        }
         if (_context is null)
         {
             Attach(application);
