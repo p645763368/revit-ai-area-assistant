@@ -87,6 +87,17 @@ class RvtMcpGatewayTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "response timed out"):
             client._read()
 
+    def test_mcp_client_ignores_blank_stdout_lines(self):
+        client = McpStdioClient(["unused"])
+        client._messages.put("\n")
+        client._messages.put("  \r\n")
+        client._messages.put('{"jsonrpc":"2.0","id":1,"result":{}}\n')
+
+        self.assertEqual(
+            client._read(),
+            {"jsonrpc": "2.0", "id": 1, "result": {}},
+        )
+
     def test_request_started_after_client_age_gets_a_fresh_timeout_window(self):
         class RecordingQueue:
             def __init__(self):

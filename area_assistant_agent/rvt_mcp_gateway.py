@@ -137,16 +137,19 @@ class McpStdioClient:
         stdin.flush()
 
     def _read(self, deadline: Optional[float] = None) -> dict:
-        timeout = self._timeout_seconds
-        if deadline is not None:
-            timeout = max(0.0, deadline - time.monotonic())
-        try:
-            line = self._messages.get(timeout=timeout)
-        except queue.Empty as error:
-            raise RuntimeError("rvt-mcp response timed out") from error
-        if line is None:
-            raise RuntimeError("rvt-mcp server closed the connection")
-        return json.loads(line)
+        while True:
+            timeout = self._timeout_seconds
+            if deadline is not None:
+                timeout = max(0.0, deadline - time.monotonic())
+            try:
+                line = self._messages.get(timeout=timeout)
+            except queue.Empty as error:
+                raise RuntimeError("rvt-mcp response timed out") from error
+            if line is None:
+                raise RuntimeError("rvt-mcp server closed the connection")
+            if not line.strip():
+                continue
+            return json.loads(line)
 
     def _read_stdout_lines(self) -> None:
         if self._process is None or self._process.stdout is None:
