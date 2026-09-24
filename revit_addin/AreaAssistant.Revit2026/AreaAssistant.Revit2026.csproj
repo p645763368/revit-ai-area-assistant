@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <OutputType>Library</OutputType>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <EnableDefaultPageItems>false</EnableDefaultPageItems>
+    <AssemblyName>AreaAssistant.Revit2026</AssemblyName>
+    <RootNamespace>AreaAssistant.Revit2026</RootNamespace>
+    <NoWarn>$(NoWarn);MSB3277</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="RevitAPI">
+      <HintPath>C:\Program Files\Autodesk\Revit 2026\RevitAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RevitAPIUI">
+      <HintPath>C:\Program Files\Autodesk\Revit 2026\RevitAPIUI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="App.cs" />
+    <Compile Include="ShowPaneCommand.cs" />
+    <Compile Include="AreaAssistantPaneProvider.cs" />
+    <Compile Include="Agent\AgentProcess.cs" />
+    <Compile Include="Agent\AgentClient.cs" />
+    <Compile Include="Agent\Contracts.cs" />
+    <Compile Include="Planning\PlanningCoordinator.cs" />
+    <Compile Include="Planning\PaneState.cs" />
+    <Compile Include="Revit\RevitContext.cs" />
+    <Compile Include="Revit\ReadSelectionHandler.cs" />
+    <Compile Include="Revit\SelectedSource.cs" />
+    <Compile Include="AreaAssistantPane.xaml.cs">
+      <DependentUpon>AreaAssistantPane.xaml</DependentUpon>
+    </Compile>
+    <Page Include="AreaAssistantPane.xaml" />
+    <None Include="AreaAssistant.Revit2026.addin" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://revit-ai-area-assistant.local/contracts/v1/actions/planning-request.schema.json",
+  "title": "Read-only planning request",
+  "allOf": [
+    {"$ref": "../request.schema.json"},
+    {
+      "properties": {
+        "action": {"const": "analysis.plan"},
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["context_id", "document_fingerprint", "generation", "message", "panel_instance_id", "project_directory", "session_id"],
+          "properties": {
+            "context_id": {"type": "string", "minLength": 1},
+            "document_fingerprint": {"type": "string", "minLength": 1},
+            "generation": {"type": "integer", "minimum": 0},
+            "message": {"type": "string", "minLength": 1, "pattern": "\\S"},
+            "panel_instance_id": {"type": "string", "minLength": 1},
+            "project_directory": {"type": "string", "minLength": 1},
+            "session_id": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    }
+  ]
+}

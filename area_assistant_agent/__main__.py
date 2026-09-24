@@ -105,7 +105,7 @@ def main():
     actions.add_argument(
         "--document-status",
         action="store_true",
-        help="read a pyRevit snapshot from stdin and verify it through rvt-mcp",
+        help="read a Revit frontend snapshot from stdin and verify it through rvt-mcp",
     )
     actions.add_argument(
         "--show-data-root",

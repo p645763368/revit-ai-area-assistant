@@ -1,0 +1,14 @@
+{
+  "contract_version": "1.0",
+  "message_type": "request",
+  "request_id": "req-plan-job-cancel-example",
+  "action": "analysis.plan.cancel",
+  "payload": {
+    "context_id": "context-example",
+    "document_fingerprint": "sha256:example-document",
+    "generation": 1,
+    "panel_instance_id": "panel-example",
+    "project_directory": "D:\\demo",
+    "session_id": "00000000-0000-4000-8000-000000000001"
+  }
+}

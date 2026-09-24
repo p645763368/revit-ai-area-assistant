@@ -1,6 +1,6 @@
 # Streaming chat contract
 
-The pyRevit panel sends a `request` envelope with `action: "chat.stream"`. Its payload contains one non-empty `message` string. The local Agent answers as newline-delimited JSON using the existing v1 envelopes:
+An optional client can send a `request` envelope with `action: "chat.stream"`. Its payload contains one non-empty `message` string. The local Agent answers as newline-delimited JSON using the existing v1 envelopes. The first C# Area Assistant release does not expose general chat in its UI:
 
 1. An `accepted` response with `payload.event: "started"`.
 2. Zero or more `accepted` responses whose payload contains a non-empty `delta` string.

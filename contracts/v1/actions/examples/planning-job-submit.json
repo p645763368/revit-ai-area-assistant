@@ -1,0 +1,16 @@
+{
+  "contract_version": "1.0",
+  "message_type": "request",
+  "request_id": "req-plan-job-submit-example",
+  "action": "analysis.plan.submit",
+  "payload": {
+    "context_id": "context-example",
+    "document_fingerprint": "sha256:example-document",
+    "generation": 1,
+    "message": "只读扫描当前模型并生成候选面积方案。",
+    "panel_instance_id": "panel-example",
+    "project_directory": "D:\\demo",
+    "retry_terminal": false,
+    "session_id": "00000000-0000-4000-8000-000000000001"
+  }
+}

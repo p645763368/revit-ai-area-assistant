@@ -1,3 +1,3 @@
 # Versioned rules
 
-Later tickets place reviewed, cross-project rule snapshots here. No production rule snapshot is part of Issue #2.
+`revit-gfa-calculator.v1.json` is the Issue #7 reviewed, anonymized rule snapshot. Every snapshot must keep explicit `version`, `provenance` and `applicability` fields; project-specific corrections remain in ignored runtime data.

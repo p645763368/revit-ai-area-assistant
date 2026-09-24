@@ -1,6 +1,6 @@
 # Shared communication contracts
 
-`v1/` is the public boundary shared by the pyRevit client, local Agent and later rvt-mcp integration. It defines four message envelopes: request, response, state and error. Every message carries `contract_version: "1.0"` and a stable `message_type`.
+`v1/` is the public boundary shared by the Revit 2026 C# add-in, local Agent and rvt-mcp read integration. It defines four message envelopes: request, response, state and error. Every message carries `contract_version: "1.0"` and a stable `message_type`.
 
 Compatibility rules:
 
@@ -15,5 +15,6 @@ The JSON Schema files are the source of truth. `examples/` contains reviewable s
 Feature contracts:
 
 - [`v1/chat.md`](v1/chat.md) defines the backward-compatible `chat.stream` action and its streamed response payloads.
-- `v1/actions/revit-document-status-request.schema.json` and `revit-document-status.schema.json` define the document-status request and binding result shared by the pyRevit panel, local Agent and rvt-mcp integration. They reuse the existing v1 request/response envelope fields without changing their meaning.
-- `v1/actions/session-request.schema.json` and `session-response.schema.json` define the additive session open, explicit choice, message audit and document-switch revocation actions used by the pyRevit panel and local Agent.
+- `v1/actions/revit-document-status-request.schema.json` and `revit-document-status.schema.json` define the document-status request and binding result shared by the C# add-in, local Agent and rvt-mcp read integration. They reuse the existing v1 request/response envelope fields without changing their meaning.
+- `v1/actions/session-request.schema.json` and `session-response.schema.json` define session open, message audit and document-switch revocation actions used by the C# add-in and local Agent.
+- `v1/actions/planning-request.schema.json` and `planning-response.schema.json` define the additive `analysis.plan` action. It is bound to the active document session and returns two to four clickable options with exactly one recommendation, plus rationale and impact. The v1 envelope is unchanged.

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://revit-ai-area-assistant.local/contracts/v1/actions/planning-job-status-query.schema.json",
+  "title": "Recoverable planning job status query",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["context_id", "document_fingerprint", "generation", "panel_instance_id", "project_directory", "session_id"],
+  "properties": {
+    "context_id": {"type": "string", "minLength": 1},
+    "document_fingerprint": {"type": "string", "minLength": 1},
+    "generation": {"type": "integer", "minimum": 0},
+    "panel_instance_id": {"type": "string", "minLength": 1},
+    "project_directory": {"type": "string", "minLength": 1},
+    "session_id": {"type": "string", "minLength": 1}
+  }
+}

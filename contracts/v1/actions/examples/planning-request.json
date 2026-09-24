@@ -1,0 +1,15 @@
+{
+  "contract_version": "1.0",
+  "message_type": "request",
+  "request_id": "req-plan-example",
+  "action": "analysis.plan",
+  "payload": {
+    "context_id": "context-example",
+    "document_fingerprint": "sha256:example-document",
+    "generation": 1,
+    "message": "只读扫描当前模型并比较候选面积边界来源。",
+    "panel_instance_id": "panel-example",
+    "project_directory": "D:\\demo",
+    "session_id": "00000000-0000-4000-8000-000000000001"
+  }
+}

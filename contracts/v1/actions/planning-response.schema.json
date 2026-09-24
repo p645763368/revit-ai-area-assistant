@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://revit-ai-area-assistant.local/contracts/v1/actions/planning-response.schema.json",
+  "title": "Structured planning response",
+  "allOf": [
+    {"$ref": "../response.schema.json"},
+    {
+      "properties": {
+        "status": {"const": "completed"},
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["summary", "question", "options"],
+          "properties": {
+            "summary": {"type": "string", "minLength": 1},
+            "question": {"type": "string", "minLength": 1},
+            "options": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 4,
+              "contains": {
+                "type": "object",
+                "required": ["recommended"],
+                "properties": {"recommended": {"const": true}}
+              },
+              "minContains": 1,
+              "maxContains": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "label", "recommended", "rationale", "impact"],
+                "properties": {
+                  "id": {"type": "string", "minLength": 1},
+                  "label": {"type": "string", "minLength": 1},
+                  "recommended": {"type": "boolean"},
+                  "rationale": {"type": "string", "minLength": 1},
+                  "impact": {"type": "string", "minLength": 1}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

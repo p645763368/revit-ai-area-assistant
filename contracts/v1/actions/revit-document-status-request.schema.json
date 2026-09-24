@@ -13,8 +13,9 @@
     "payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["current_document", "previous_document", "previous_pause_reason"],
+      "required": ["current_document", "previous_document", "previous_pause_reason", "allow_document_rebind"],
       "properties": {
+        "allow_document_rebind": {"type": "boolean"},
         "current_document": {"$ref": "#/$defs/document"},
         "previous_document": {
           "oneOf": [

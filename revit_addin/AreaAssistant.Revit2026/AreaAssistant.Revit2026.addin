@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>AI Area Assistant</Name>
+    <Assembly>AreaAssistant\AreaAssistant.Revit2026.dll</Assembly>
+    <AddInId>68B0DC6D-DF0B-4DFA-B05E-F96AC7E21851</AddInId>
+    <FullClassName>AreaAssistant.Revit2026.App</FullClassName>
+    <VendorId>AIAR</VendorId>
+    <VendorDescription>AI Area Assistant for Revit 2026</VendorDescription>
+  </AddIn>
+</RevitAddIns>
