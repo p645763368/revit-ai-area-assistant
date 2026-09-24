@@ -87,7 +87,7 @@ public sealed class AgentClient
         var query = string.Join("&", IdentityPayload(identity)
             .Select(item => $"{Uri.EscapeDataString(item.Key)}={Uri.EscapeDataString(Convert.ToString(item.Value, System.Globalization.CultureInfo.InvariantCulture) ?? "")}"));
         using var response = await _http.GetAsync($"v1/plan-jobs/{Uri.EscapeDataString(jobId)}?{query}", cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(response, cancellationToken);
         var envelope = await response.Content.ReadFromJsonAsync<ResponseEnvelope<PlanJobSnapshot>>(JsonOptions, cancellationToken)
             ?? throw new InvalidDataException("Agent returned an empty response.");
         Validate(envelope.Payload);
@@ -99,7 +99,7 @@ public sealed class AgentClient
     {
         var request = new RequestEnvelope<TPayload>("1.0", "request", Guid.NewGuid().ToString("N"), action, payload);
         using var response = await _http.PostAsJsonAsync(path, request, JsonOptions, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(response, cancellationToken);
         var envelope = await response.Content.ReadFromJsonAsync<ResponseEnvelope<TResponse>>(JsonOptions, cancellationToken)
             ?? throw new InvalidDataException("Agent returned an empty response.");
         if (envelope.Payload is PlanJobSnapshot snapshot) Validate(snapshot);
@@ -138,5 +138,24 @@ public sealed class AgentClient
             || string.IsNullOrWhiteSpace(option.Rationale)
             || string.IsNullOrWhiteSpace(option.Impact)))
             throw new InvalidDataException("Agent returned an incomplete planning option.");
+    }
+
+    private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        if (response.IsSuccessStatusCode) return;
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            var code = root.TryGetProperty("code", out var codeValue) ? codeValue.GetString() : null;
+            var message = root.TryGetProperty("message", out var messageValue) ? messageValue.GetString() : null;
+            if (!string.IsNullOrWhiteSpace(message))
+                throw new InvalidOperationException(string.IsNullOrWhiteSpace(code) ? message : $"{code}: {message}");
+        }
+        catch (JsonException)
+        {
+        }
+        throw new HttpRequestException($"Agent HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
     }
 }

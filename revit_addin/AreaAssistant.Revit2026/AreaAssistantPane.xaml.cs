@@ -24,6 +24,9 @@ public partial class AreaAssistantPane : Page
     private int _generation;
     private bool _scanAfterSelection;
     private CancellationTokenSource? _pollCancellation;
+    private bool _initializing;
+    private int _initializationAttempts;
+    private DateTime _nextInitializationAttemptUtc;
 
     public AreaAssistantPane()
     {
@@ -81,7 +84,15 @@ public partial class AreaAssistantPane : Page
             Attach(application);
             return;
         }
-        if (_session is null) return;
+        if (_session is null)
+        {
+            if (!_initializing
+                && _documentData is not null
+                && _initializationAttempts < 3
+                && DateTime.UtcNow >= _nextInitializationAttemptUtc)
+                _ = EnsureDocumentSessionAsync(_documentData);
+            return;
+        }
         var currentIdentity = RevitContext.CreateIdentity(_context.CurrentDocument);
         if (currentIdentity == _session.DocumentFingerprint) return;
         _pollCancellation?.Cancel();
@@ -97,6 +108,9 @@ public partial class AreaAssistantPane : Page
     private async Task EnsureDocumentSessionAsync(RevitDocumentData document)
     {
         if (_session?.DocumentFingerprint == document.Fingerprint) return;
+        if (_initializing) return;
+        _initializing = true;
+        _initializationAttempts++;
 
         SetState(PanePhase.StartingAgent);
         ErrorText.Text = "";
@@ -128,6 +142,7 @@ public partial class AreaAssistantPane : Page
                 CancellationToken.None);
             _planning = new PlanningCoordinator(_agentClient);
             _sources = [];
+            _initializationAttempts = 0;
             SelectionText.Text = "未选择";
             ResultText.Text = "尚无方案";
             SetState(PanePhase.Ready);
@@ -136,7 +151,12 @@ public partial class AreaAssistantPane : Page
         {
             AgentStatusText.Text = "连接失败";
             ErrorText.Text = error.Message;
+            _nextInitializationAttemptUtc = DateTime.UtcNow.AddSeconds(2);
             SetState(PanePhase.Failed);
+        }
+        finally
+        {
+            _initializing = false;
         }
     }
 

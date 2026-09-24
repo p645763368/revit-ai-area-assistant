@@ -66,6 +66,20 @@ public sealed class PlanningCoordinatorTests
         await Assert.ThrowsAsync<InvalidDataException>(() => coordinator.SubmitOnceAsync(Identity, "plan", default));
     }
 
+    [Fact]
+    public async Task AgentErrorBodyIsShownInsteadOfGenericHttpStatus()
+    {
+        var handler = new FakeHandler(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+        {
+            Content = new StringContent("{\"code\":\"document_status_unavailable\",\"message\":\"rvt-mcp is not ready\"}", Encoding.UTF8, "application/json"),
+        });
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Coordinator(handler).SubmitOnceAsync(Identity, "plan", default));
+
+        Assert.Contains("rvt-mcp is not ready", error.Message);
+    }
+
     private static PlanningCoordinator Coordinator(FakeHandler handler) =>
         new(new AgentClient(new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:8765/") }));
 
@@ -94,6 +108,7 @@ public sealed class PlanningCoordinatorTests
             Requests.Add((request.Method, request.RequestUri!.ToString()));
             var next = _responses.Dequeue();
             if (next is Exception error) return Task.FromException<HttpResponseMessage>(error);
+            if (next is HttpResponseMessage response) return Task.FromResult(response);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent((string)next, Encoding.UTF8, "application/json"),
