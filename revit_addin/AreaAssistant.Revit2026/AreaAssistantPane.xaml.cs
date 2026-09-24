@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Reflection;
 using System.Windows.Controls;
 using Autodesk.Revit.UI;
+using Autodesk.Revit.UI.Events;
 using AreaAssistant.Revit2026.Agent;
 using AreaAssistant.Revit2026.Planning;
 using AreaAssistant.Revit2026.Revit;
@@ -48,6 +49,13 @@ public partial class AreaAssistantPane : Page
         _documentData = RevitContext.Capture(_context.CurrentDocument);
         ShowDocument();
         await EnsureDocumentSessionAsync(_documentData);
+    }
+
+    internal void InitializeOnFirstIdling(object? sender, IdlingEventArgs e)
+    {
+        if (sender is not UIApplication application) return;
+        application.Idling -= InitializeOnFirstIdling;
+        Attach(application);
     }
 
     private async Task EnsureDocumentSessionAsync(RevitDocumentData document)
