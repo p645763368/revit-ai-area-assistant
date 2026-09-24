@@ -1,6 +1,7 @@
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 
 namespace AreaAssistant.Revit2026.Agent;
@@ -98,7 +99,9 @@ public sealed class AgentClient
         string path, string action, TPayload payload, CancellationToken cancellationToken)
     {
         var request = new RequestEnvelope<TPayload>("1.0", "request", Guid.NewGuid().ToString("N"), action, payload);
-        using var response = await _http.PostAsJsonAsync(path, request, JsonOptions, cancellationToken);
+        var json = JsonSerializer.Serialize(request, JsonOptions);
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var response = await _http.PostAsync(path, content, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
         var envelope = await response.Content.ReadFromJsonAsync<ResponseEnvelope<TResponse>>(JsonOptions, cancellationToken)
             ?? throw new InvalidDataException("Agent returned an empty response.");

@@ -25,7 +25,6 @@ public partial class AreaAssistantPane : Page
     private bool _scanAfterSelection;
     private CancellationTokenSource? _pollCancellation;
     private bool _initializing;
-    private int _initializationAttempts;
     private DateTime _nextInitializationAttemptUtc;
 
     public AreaAssistantPane()
@@ -88,7 +87,6 @@ public partial class AreaAssistantPane : Page
         {
             if (!_initializing
                 && _documentData is not null
-                && _initializationAttempts < 3
                 && DateTime.UtcNow >= _nextInitializationAttemptUtc)
                 _ = EnsureDocumentSessionAsync(_documentData);
             return;
@@ -110,7 +108,6 @@ public partial class AreaAssistantPane : Page
         if (_session?.DocumentFingerprint == document.Fingerprint) return;
         if (_initializing) return;
         _initializing = true;
-        _initializationAttempts++;
 
         SetState(PanePhase.StartingAgent);
         ErrorText.Text = "";
@@ -142,14 +139,13 @@ public partial class AreaAssistantPane : Page
                 CancellationToken.None);
             _planning = new PlanningCoordinator(_agentClient);
             _sources = [];
-            _initializationAttempts = 0;
             SelectionText.Text = "未选择";
             ResultText.Text = "尚无方案";
             SetState(PanePhase.Ready);
         }
         catch (Exception error)
         {
-            AgentStatusText.Text = "连接失败";
+            AgentStatusText.Text = "等待 Agent 就绪";
             ErrorText.Text = error.Message;
             _nextInitializationAttemptUtc = DateTime.UtcNow.AddSeconds(2);
             SetState(PanePhase.Failed);

@@ -80,6 +80,18 @@ public sealed class PlanningCoordinatorTests
         Assert.Contains("rvt-mcp is not ready", error.Message);
     }
 
+    [Fact]
+    public async Task PostsUseAnExplicitContentLength()
+    {
+        var handler = new FakeHandler(Job("accepted", "queued"));
+
+        await Coordinator(handler).SubmitOnceAsync(Identity, "plan", default);
+
+        var request = Assert.Single(handler.Requests, request => request.Method == HttpMethod.Post);
+        Assert.True(request.ContentLength > 0);
+        Assert.NotEqual(true, request.Chunked);
+    }
+
     private static PlanningCoordinator Coordinator(FakeHandler handler) =>
         new(new AgentClient(new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:8765/") }));
 
@@ -101,11 +113,15 @@ public sealed class PlanningCoordinatorTests
     private sealed class FakeHandler(params object[] responses) : HttpMessageHandler
     {
         private readonly Queue<object> _responses = new(responses);
-        public List<(HttpMethod Method, string Uri)> Requests { get; } = [];
+        public List<(HttpMethod Method, string Uri, long? ContentLength, bool? Chunked)> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            Requests.Add((request.Method, request.RequestUri!.ToString()));
+            Requests.Add((
+                request.Method,
+                request.RequestUri!.ToString(),
+                request.Content?.Headers.ContentLength,
+                request.Headers.TransferEncodingChunked));
             var next = _responses.Dequeue();
             if (next is Exception error) return Task.FromException<HttpResponseMessage>(error);
             if (next is HttpResponseMessage response) return Task.FromResult(response);
